@@ -763,6 +763,20 @@ input:focus {
   background: var(--yellow);
 }
 
+/*
+ * Inline copy control for the export path. Sized to sit on the result line
+ * rather than below it, so the location and the way to grab it read as one
+ * thing.
+ */
+.result .copy-path {
+  width: auto;
+  margin-left: 4px;
+  padding: 1px 7px;
+  font-size: 10px;
+  line-height: 1.5;
+  vertical-align: baseline;
+}
+
 .exportCard {
   box-shadow: var(--shadow-2);
 }

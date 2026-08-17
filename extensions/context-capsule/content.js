@@ -401,7 +401,7 @@
     );
 
     showToast(
-      "Capture armed. Click an element. Shift-click adds more."
+      "Capture armed. Click an element. Ctrl-click adds more."
     );
   }
 
@@ -562,7 +562,13 @@
     event.preventDefault();
     event.stopImmediatePropagation();
 
-    if (event.shiftKey) {
+    /*
+     * Ctrl (Cmd on macOS) adds to the selection, matching how every file
+     * manager and design tool does multi-select. Shift is deliberately not
+     * used: browsers give Shift+click their own meaning on links and text,
+     * and the two fought each other on real pages.
+     */
+    if (event.ctrlKey || event.metaKey) {
       const existing =
         state.selected.indexOf(element);
 
@@ -1629,7 +1635,7 @@
   function toolHint(tool) {
     return {
       select:
-        "Select mode. Click, shift-click, or use arrow keys for hierarchy.",
+        "Select mode. Click, ctrl-click, or use arrow keys for hierarchy.",
 
       region:
         "Drag a freeform capture rectangle.",

@@ -121,12 +121,21 @@ function transformSidepanel(source) {
   out = edit(
     out,
     'export result copy',
-    `        exportResult.textContent =
-          \`Copied. Paste to your agent. \` +
-          \`Files: \${result.directory || result.captureId}\`;`,
-    `        exportResult.textContent =
-          \`Copied. Paste to your agent. \` +
-          \`File: \${result.filename}\`;`,
+    `        lastExportPath =
+          result.directory || result.captureId;
+
+        showExportResult(
+          \`Prompt copied. Paste to your agent. \` +
+            \`Files: \${lastExportPath}\`,
+          lastExportPath
+        );`,
+    `        lastExportPath = result.filename;
+
+        showExportResult(
+          \`Prompt copied. Paste to your agent. \` +
+            \`File: \${result.filename}\`,
+          lastExportPath
+        );`,
   );
 
   // 3. Replace the transport itself.

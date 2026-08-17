@@ -441,12 +441,13 @@ exportButton.addEventListener(
           prompt
         );
 
-        exportResult.style.color =
-          "#166534";
+        lastExportPath = result.filename;
 
-        exportResult.textContent =
-          `Copied. Paste to your agent. ` +
-          `File: ${result.filename}`;
+        showExportResult(
+          `Prompt copied. Paste to your agent. ` +
+            `File: ${result.filename}`,
+          lastExportPath
+        );
       }
     );
   }
@@ -493,24 +494,121 @@ downloadButton.addEventListener(
         const url =
           URL.createObjectURL(blob);
 
-        await chrome.downloads.download(
-          {
-            url,
+        const filename =
+          `${capsule.captureId}.json`;
 
-            filename:
-              `${capsule.captureId}.json`,
-
-            saveAs: true
-          }
-        );
+        const downloadId =
+          await chrome.downloads.download(
+            {
+              url,
+              filename,
+              saveAs: true
+            }
+          );
 
         setTimeout(() => {
           URL.revokeObjectURL(url);
         }, 10_000);
+
+        /*
+         * Downloading and saying nothing left the user with no idea whether
+         * anything happened or where it went. Chrome only knows the resolved
+         * path once the write finishes, so ask for it rather than guessing at
+         * the Downloads folder.
+         */
+        const written =
+          await resolveDownloadPath(downloadId);
+
+        lastExportPath =
+          written || filename;
+
+        showExportResult(
+          written
+            ? `Saved. ${written}`
+            : `Saved as ${filename} in your Downloads folder.`,
+          lastExportPath
+        );
       }
     );
   }
 );
+
+/**
+ * Wait for a download to leave the "in_progress" state and report where it
+ * landed. Returns null rather than throwing: not knowing the path is a worse
+ * message, not a failure.
+ */
+async function resolveDownloadPath(
+  downloadId
+) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const [item] =
+      await chrome.downloads.search({
+        id: downloadId
+      });
+
+    if (!item) {
+      return null;
+    }
+
+    if (item.state === "complete") {
+      return item.filename || null;
+    }
+
+    if (item.state === "interrupted") {
+      return null;
+    }
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, 150)
+    );
+  }
+
+  return null;
+}
+
+/** Where the last capsule was written, for the copy-path button. */
+let lastExportPath = "";
+
+/**
+ * Report an export, with a control that puts the location on the clipboard.
+ * A path you cannot select is a path you cannot use.
+ */
+function showExportResult(
+  message,
+  path
+) {
+  exportResult.style.color = "#166534";
+  exportResult.textContent = message;
+
+  if (!path) {
+    return;
+  }
+
+  const button =
+    document.createElement("button");
+
+  button.type = "button";
+  button.className = "ghost copy-path";
+  button.textContent = "Copy path";
+
+  button.addEventListener(
+    "click",
+    async () => {
+      await navigator.clipboard.writeText(
+        path
+      );
+
+      button.textContent = "Copied";
+
+      setTimeout(() => {
+        button.textContent = "Copy path";
+      }, 1600);
+    }
+  );
+
+  exportResult.append(" ", button);
+}
 
 chrome.runtime.onMessage.addListener(
   (message) => {
@@ -1220,17 +1318,40 @@ async function buildCapsule(
         )
       );
 
+      /*
+       * The full-page snapshot runs into megabytes, so it gets its own file
+       * rather than being buried inside the per-node CDP record. Burying it
+       * made the "Include full-page DOM snapshot" option look like it did
+       * nothing: the bytes were captured but nothing in the capsule named them.
+       */
+      const { domSnapshot, ...cdpRest } =
+        frame.cdpContext || {};
+
       files.push(
         textFile(
           `page/frame-${number}-cdp.json`,
 
           JSON.stringify(
-            frame.cdpContext,
+            cdpRest,
             null,
             2
           )
         )
       );
+
+      if (domSnapshot) {
+        files.push(
+          textFile(
+            `page/frame-${number}-dom-snapshot.json`,
+
+            JSON.stringify(
+              domSnapshot,
+              null,
+              2
+            )
+          )
+        );
+      }
 
       files.push(
         textFile(

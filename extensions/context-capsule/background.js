@@ -578,9 +578,20 @@ async function armTab(tabId) {
   return getStatus();
 }
 
+/**
+ * Disarm on request.
+ *
+ * Stopping also turns auto-arm off. Auto-arm is on by default and fires on
+ * navigation, tab activation and tab update, so without this the tool re-armed
+ * itself moments after the user asked it to stop — which reads as "there is no
+ * way to turn this off". An explicit stop is a statement about intent, not just
+ * about this one tab, so every armed tab is torn down too.
+ */
 async function stopActiveTab() {
   const tab = await getActiveTab();
   const session = await loadSession(tab.id);
+
+  await chrome.storage.local.set({ [AUTO_ARM_KEY]: false });
 
   try {
     await chrome.tabs.sendMessage(tab.id, { type: "CC_STOP" });
@@ -599,6 +610,13 @@ async function stopActiveTab() {
   clockOffsets.delete(tab.id);
 
   await deleteSession(tab.id);
+
+  /*
+   * Other tabs armed earlier are still recording and still holding a debugger
+   * banner. Leaving them running after an explicit stop is the same bug in a
+   * different tab.
+   */
+  await disarmAll();
 
   return getStatus();
 }
