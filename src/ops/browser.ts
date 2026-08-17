@@ -12,6 +12,29 @@ export async function listInstances(ctx: OpsContext): Promise<Record<string, unk
    */
   await ctx.registry.adoptDiscovered().catch(() => []);
   const running = ctx.registry.list();
+  const liveIds = new Set(running.map((b) => b.id));
+
+  /*
+   * Browsers that have closed but still hold recorded history. Their network,
+   * console and artifacts remain queryable; only live control is gone. Hiding
+   * them would make yesterday's recording look lost when it is on disk.
+   */
+  const historical = ctx.stores.targets
+    .listBrowsers(true)
+    .filter((row) => !liveIds.has(row.browser_id))
+    .slice(0, 25)
+    .map((row) => ({
+      browser_id: row.browser_id,
+      profile: row.profile,
+      status: 'closed' as const,
+      live: false,
+      launched_at: new Date(row.launched_at).toISOString(),
+      recorded: {
+        requests: ctx.stores.network.count({ browserId: row.browser_id }),
+        console_entries: ctx.stores.console.countEntries({ browserId: row.browser_id }),
+      },
+    }))
+    .filter((row) => row.recorded.requests > 0 || row.recorded.console_entries > 0);
   return {
     count: running.length,
     auto_launch: ctx.config.autoLaunch,
@@ -29,6 +52,13 @@ export async function listInstances(ctx: OpsContext): Promise<Record<string, unk
       targets: instance.targets.list().length,
       launched_at: new Date(instance.launchedAt).toISOString(),
     })),
+    historical: historical.length ? historical : undefined,
+    ...(historical.length
+      ? {
+          historical_note:
+            'These browsers have closed. Their recorded network and console are still queryable by browser_id; live control is not.',
+        }
+      : {}),
     ...(running.length === 0
       ? {
           hint: ctx.config.autoLaunch

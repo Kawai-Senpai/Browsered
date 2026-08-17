@@ -6,7 +6,7 @@ import {
   type ConsoleRow,
   type ExceptionRow,
 } from '../store/console-store.js';
-import { parseSince, type OpsContext } from './context.js';
+import { parseSince, resolveBrowserScope, type OpsContext } from './context.js';
 
 export interface ConsoleQueryArgs {
   browser_id?: string;
@@ -27,8 +27,9 @@ export interface ConsoleQueryArgs {
  * query runs against SQLite rather than asking Chromium for anything.
  */
 async function scope(ctx: OpsContext, args: ConsoleQueryArgs): Promise<ConsoleFilter> {
-  const instance = await ctx.registry.resolve(args.browser_id);
-  const filter: ConsoleFilter = { browserId: instance.id };
+  // Recorded console survives the browser that produced it.
+  const { browserId } = await resolveBrowserScope(ctx, args.browser_id);
+  const filter: ConsoleFilter = { browserId };
   if (args.target_id) filter.targetHandle = args.target_id;
   if (args.source) filter.source = args.source;
   if (args.search) filter.search = args.search;

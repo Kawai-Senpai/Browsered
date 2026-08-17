@@ -2934,3 +2934,1031 @@ while the browser remains simultaneously usable by me.
 That is the complete implementation target:
 
 > **A persistent human-usable Chromium browser with an always-on DevTools/recording daemon behind it, exposing the entire debugging and automation environment to AI through MCP.**
+
+# AI-Native Debug Browser — End-to-End Test Checklist
+
+Use this after the whole system is built to verify that the browser, `browserd`, MCP layer, recording, debugging, profiling, automation, storage, artifacts, and simulation features all work together.
+
+## 1. Installation & Startup
+
+* [ ] Install the browser package on a clean machine.
+* [ ] Launch `AI Browser.exe`, `.bat`, launcher, or tray menu.
+* [ ] Confirm `browserd` starts automatically if not already running.
+* [ ] Confirm only one daemon starts when launching multiple browsers.
+* [ ] Confirm Chromium opens visibly in headed mode.
+* [ ] Confirm the browser uses the intended persistent profile.
+* [ ] Confirm browser history persists across restarts.
+* [ ] Confirm cookies persist across restarts.
+* [ ] Confirm saved logins persist across restarts.
+* [ ] Confirm configured extensions load automatically.
+* [ ] Confirm the browser receives a unique `browser_id`.
+* [ ] Confirm a recording session starts immediately.
+* [ ] Confirm CDP connection is established automatically.
+* [ ] Confirm browserd shows browser status as `ready`.
+* [ ] Confirm MCP endpoint starts automatically.
+* [ ] Confirm browser remains fully usable without any MCP client connected.
+* [ ] Confirm closing the browser marks the instance as stopped/disconnected.
+* [ ] Confirm browserd remains healthy after a browser closes.
+* [ ] Confirm another browser can be launched afterward.
+
+## 2. Normal Human Browser Usage
+
+* [ ] Open a website manually.
+* [ ] Click links manually.
+* [ ] Type into forms manually.
+* [ ] Scroll manually.
+* [ ] Open several tabs manually.
+* [ ] Close tabs manually.
+* [ ] Open a new browser window.
+* [ ] Use back/forward manually.
+* [ ] Reload pages manually.
+* [ ] Log into a test website manually.
+* [ ] Confirm normal browsing is not noticeably broken by instrumentation.
+* [ ] Confirm browserd records activity performed entirely by the human.
+
+## 3. Fresh MCP Discovery
+
+Test this with an AI/MCP client that was **not connected when the browser started**.
+
+* [ ] Start the browser.
+* [ ] Browse manually for several minutes.
+* [ ] Trigger network requests.
+* [ ] Trigger console logs.
+* [ ] Trigger an application error.
+* [ ] Only now start a fresh MCP client.
+* [ ] Call `browser.list()`.
+* [ ] Confirm the running browser appears.
+* [ ] Confirm its `browser_id` is correct.
+* [ ] Confirm current recording session is discoverable.
+* [ ] Call `tabs.list(browser_id)`.
+* [ ] Confirm all current tabs are visible.
+* [ ] Query previous network requests.
+* [ ] Query previous console logs.
+* [ ] Confirm events generated before MCP connected are available.
+* [ ] Disconnect MCP.
+* [ ] Continue browsing.
+* [ ] Connect a completely new MCP session.
+* [ ] Confirm the newer activity is also available.
+
+## 4. Multiple Browser Instances
+
+* [ ] Launch Browser A.
+* [ ] Launch Browser B.
+* [ ] Launch Browser C.
+* [ ] Confirm each gets a different `browser_id`.
+* [ ] Confirm each uses the correct profile.
+* [ ] Open different websites in each browser.
+* [ ] Call `browser.list()`.
+* [ ] Confirm all three instances appear.
+* [ ] Query Browser A network records only.
+* [ ] Confirm Browser B/C data does not leak into results.
+* [ ] Control Browser B.
+* [ ] Confirm Browser A/C are unaffected.
+* [ ] Close Browser B.
+* [ ] Confirm Browser A/C remain usable.
+* [ ] Confirm Browser B changes state to stopped.
+* [ ] Confirm Browser B's historical recording remains readable.
+
+## 5. Tab & Target Discovery
+
+* [ ] Open multiple tabs.
+* [ ] Open pages containing iframes.
+* [ ] Open pages that create Web Workers.
+* [ ] Trigger a Service Worker.
+* [ ] Load a browser extension with a service worker if applicable.
+* [ ] Verify page targets are discovered.
+* [ ] Verify iframe targets are discovered.
+* [ ] Verify worker targets are discovered.
+* [ ] Verify service-worker targets are discovered.
+* [ ] Verify targets disappearing are removed/marked correctly.
+* [ ] Verify new targets auto-attach.
+* [ ] Confirm target → session mapping is correct.
+* [ ] Confirm activity in workers is recorded.
+
+## 6. Screenshots & Vision
+
+* [ ] Request viewport screenshot.
+* [ ] Confirm the returned image matches the selected tab.
+* [ ] Request full-page screenshot.
+* [ ] Confirm content below the fold is captured.
+* [ ] Request screenshot of a specific element.
+* [ ] Confirm screenshot is returned to the AI as image content.
+* [ ] Confirm screenshot is also saved as an artifact.
+* [ ] Confirm screenshot metadata contains browser/tab/timestamp.
+* [ ] Navigate and take another screenshot.
+* [ ] Confirm old and new screenshots remain separately available.
+* [ ] Verify screenshots from different browsers are correctly isolated.
+
+## 7. Navigation & Human-Like Automation
+
+* [ ] Navigate to a URL.
+* [ ] Click a button by selector.
+* [ ] Click using accessible role/name.
+* [ ] Double-click an element.
+* [ ] Hover over an element.
+* [ ] Fill an input.
+* [ ] Type character-by-character.
+* [ ] Press Enter.
+* [ ] Press keyboard shortcuts.
+* [ ] Scroll down.
+* [ ] Scroll up.
+* [ ] Scroll a nested scrollable container.
+* [ ] Scroll an element into view.
+* [ ] Drag and drop.
+* [ ] Open a new tab.
+* [ ] Switch tabs.
+* [ ] Close a tab.
+* [ ] Use Back.
+* [ ] Use Forward.
+* [ ] Reload.
+* [ ] Wait for an element.
+* [ ] Wait for navigation.
+* [ ] Verify AI interaction remains visible in the headed browser.
+
+## 8. Human + AI Shared Control
+
+* [ ] Set mode to `observe`.
+* [ ] Confirm AI can inspect but cannot click/type/change state.
+* [ ] Set mode to `shared`.
+* [ ] Confirm human and AI can both interact.
+* [ ] Set mode to `agent`.
+* [ ] Confirm agent interaction is enabled.
+* [ ] Set mode to `paused`.
+* [ ] Confirm mutating AI actions are rejected.
+* [ ] Press emergency/manual `Pause AI` control.
+* [ ] Confirm control stops immediately.
+* [ ] Resume control.
+* [ ] Confirm read-only inspection remains available where intended.
+
+## 9. DOM Inspection
+
+* [ ] Query an element by CSS selector.
+* [ ] Query multiple elements.
+* [ ] Read element text.
+* [ ] Read attributes.
+* [ ] Read `outerHTML`.
+* [ ] Read children.
+* [ ] Read parent.
+* [ ] Read bounding box.
+* [ ] Inspect a deeply nested element.
+* [ ] Inspect an element inside an iframe.
+* [ ] Inspect an element inside Shadow DOM.
+* [ ] Modify an attribute.
+* [ ] Remove an attribute.
+* [ ] Modify text.
+* [ ] Modify HTML.
+* [ ] Remove a node.
+* [ ] Confirm changes visibly affect the page.
+* [ ] Export a large DOM tree as an artifact.
+* [ ] Read only a slice of the exported DOM artifact.
+
+## 10. Element Highlighting & Picker
+
+* [ ] Call `inspector.highlight(node)`.
+* [ ] Confirm the correct element is visibly highlighted.
+* [ ] Highlight an element inside an iframe.
+* [ ] Remove highlighting.
+* [ ] Start element-picker mode.
+* [ ] Hover over elements manually.
+* [ ] Confirm hover highlighting works.
+* [ ] Click a selected element.
+* [ ] Confirm browserd returns a stable node handle.
+* [ ] Inspect the selected node through MCP.
+* [ ] Screenshot the highlighted element.
+* [ ] Confirm AI can visually correlate the highlight with DOM data.
+
+## 11. CSS Inspector
+
+* [ ] Read computed styles.
+* [ ] Read inline styles.
+* [ ] Read matched stylesheet rules.
+* [ ] Verify selector/source filename/line information.
+* [ ] Inspect inherited styles.
+* [ ] Inspect pseudo-element styles.
+* [ ] Inspect CSS variables.
+* [ ] Inspect `display`.
+* [ ] Inspect `visibility`.
+* [ ] Inspect `opacity`.
+* [ ] Inspect `overflow`.
+* [ ] Inspect `position`.
+* [ ] Inspect `z-index`.
+* [ ] Inspect transforms.
+* [ ] Modify an inline style.
+* [ ] Modify a stylesheet rule.
+* [ ] Confirm visual change.
+* [ ] Restore the original style.
+* [ ] Export large stylesheet source as an artifact.
+
+## 12. Accessibility
+
+* [ ] Capture accessibility snapshot.
+* [ ] Verify roles.
+* [ ] Verify accessible names.
+* [ ] Verify labels.
+* [ ] Verify disabled states.
+* [ ] Verify expanded/collapsed states.
+* [ ] Verify focused element.
+* [ ] Compare accessibility tree before/after interaction.
+* [ ] Detect an intentionally unlabeled form control.
+
+## 13. Console Logging
+
+Create a test page that emits all log types.
+
+* [ ] Capture `console.log`.
+* [ ] Capture `console.info`.
+* [ ] Capture `console.warn`.
+* [ ] Capture `console.error`.
+* [ ] Capture `console.debug`.
+* [ ] Capture objects passed as console arguments.
+* [ ] Capture stack traces.
+* [ ] Capture source URL.
+* [ ] Capture source line/column.
+* [ ] Capture timestamps.
+* [ ] Capture logs from iframes.
+* [ ] Capture logs from workers where supported.
+* [ ] Capture uncaught exceptions.
+* [ ] Capture rejected promises.
+* [ ] Query console by level.
+* [ ] Query by text search.
+* [ ] Query by start/end time.
+* [ ] Query by tab.
+* [ ] Paginate through thousands of logs.
+* [ ] Export logs to NDJSON.
+* [ ] Read a range from exported logs.
+* [ ] Verify logs generated before MCP connected remain queryable.
+
+## 14. Console / Runtime Execution
+
+* [ ] Execute `1 + 1`.
+* [ ] Read `document.title`.
+* [ ] Inspect `window.location`.
+* [ ] Query DOM through executed JavaScript.
+* [ ] Return a JSON object.
+* [ ] Return an array.
+* [ ] Return a complex object handle.
+* [ ] Inspect properties of that object.
+* [ ] Invoke a function on that object.
+* [ ] Execute code in a chosen frame.
+* [ ] Execute code in a paused debugger frame.
+* [ ] Release object handles.
+* [ ] Confirm browserd does not leak handles indefinitely.
+
+## 15. Network Request Recording
+
+Use a test application that performs GET/POST/PUT/DELETE requests.
+
+* [ ] Capture GET request.
+* [ ] Capture POST request.
+* [ ] Capture PUT request.
+* [ ] Capture DELETE request.
+* [ ] Capture URL.
+* [ ] Capture HTTP method.
+* [ ] Capture request headers.
+* [ ] Capture transmitted extra headers where available.
+* [ ] Capture cookies.
+* [ ] Capture request body.
+* [ ] Capture JSON payload.
+* [ ] Capture form-urlencoded payload.
+* [ ] Test multipart upload behavior.
+* [ ] Capture response status.
+* [ ] Capture response headers.
+* [ ] Capture response cookies.
+* [ ] Capture response body.
+* [ ] Capture MIME type.
+* [ ] Capture protocol.
+* [ ] Capture timing information.
+* [ ] Capture remote IP where available.
+* [ ] Capture initiator.
+* [ ] Capture initiator stack.
+* [ ] Capture redirect chain.
+* [ ] Capture failed request reason.
+* [ ] Capture cache information.
+* [ ] Capture service-worker involvement.
+* [ ] Confirm records remain available after navigation.
+* [ ] Confirm records remain available after tab closes.
+
+## 16. Large Network Responses
+
+* [ ] Request a 1 MB JSON response.
+* [ ] Request a 10 MB JSON response.
+* [ ] Request a 100+ MB response if practical.
+* [ ] Confirm browserd does not inject the entire response into MCP.
+* [ ] Confirm response is written to an artifact.
+* [ ] Check `artifact.stat`.
+* [ ] Read first 64 KB.
+* [ ] Read a middle range.
+* [ ] Search for a known string.
+* [ ] Query a known JSON path.
+* [ ] Confirm memory usage remains reasonable.
+* [ ] Confirm incomplete/cancelled downloads are handled safely.
+
+## 17. Network Export
+
+* [ ] Export a single request.
+* [ ] Export a selected time range.
+* [ ] Export a selected tab.
+* [ ] Export HAR.
+* [ ] Export JSON.
+* [ ] Export NDJSON.
+* [ ] Confirm request bodies are represented.
+* [ ] Confirm response bodies/resources are represented as intended.
+* [ ] Open the HAR in another HAR-compatible tool.
+* [ ] Confirm it parses correctly.
+* [ ] Confirm exported files receive artifact IDs.
+* [ ] Confirm returned filesystem paths exist.
+
+## 18. WebSocket Debugging
+
+* [ ] Connect to a WebSocket endpoint.
+* [ ] Record handshake.
+* [ ] Record sent frames.
+* [ ] Record received frames.
+* [ ] Record text frames.
+* [ ] Record binary-frame metadata/artifacts.
+* [ ] Query frames by time.
+* [ ] Query frames by content.
+* [ ] Export WebSocket conversation.
+* [ ] Verify WebSocket records remain after disconnect.
+
+## 19. Local Storage
+
+* [ ] List localStorage.
+* [ ] Read a key.
+* [ ] Set a key.
+* [ ] Reload page and confirm change.
+* [ ] Delete a key.
+* [ ] Clear localStorage.
+* [ ] Verify origin isolation.
+
+## 20. Session Storage
+
+* [ ] List sessionStorage.
+* [ ] Read a key.
+* [ ] Set a key.
+* [ ] Delete a key.
+* [ ] Clear sessionStorage.
+* [ ] Confirm tab/session isolation works as expected.
+* [ ] Confirm correct behavior after navigation.
+
+## 21. Cookies
+
+* [ ] List cookies.
+* [ ] Inspect domain/path/secure/HTTPOnly/SameSite.
+* [ ] Set a test cookie.
+* [ ] Delete a cookie.
+* [ ] Clear cookies for a site.
+* [ ] Confirm cookie modification affects subsequent requests.
+* [ ] Confirm HTTPOnly handling is correctly represented.
+
+## 22. IndexedDB
+
+* [ ] List databases.
+* [ ] Describe object stores.
+* [ ] List indexes.
+* [ ] Query records.
+* [ ] Paginate through a large object store.
+* [ ] Insert/update a record through the browser-side fallback.
+* [ ] Verify application sees the changed record.
+* [ ] Delete a record.
+* [ ] Clear an object store.
+* [ ] Export database contents.
+* [ ] Inspect exported content through artifacts.
+
+## 23. Cache Storage
+
+* [ ] List caches.
+* [ ] List cache entries.
+* [ ] Read cached response metadata.
+* [ ] Read cached response body.
+* [ ] Delete a cached entry.
+* [ ] Clear a cache.
+* [ ] Confirm application behavior changes appropriately.
+
+## 24. JavaScript Sources
+
+* [ ] List loaded scripts.
+* [ ] Retrieve small script source.
+* [ ] Search loaded scripts for a known string.
+* [ ] Find matching filename/line.
+* [ ] Read selected source range.
+* [ ] Search minified bundle.
+* [ ] Search source-mapped code where available.
+* [ ] Export large source file as an artifact.
+* [ ] Verify source search does not dump entire bundles into model context.
+
+## 25. JavaScript Debugger
+
+Create a deterministic test script.
+
+* [ ] Enable debugger.
+* [ ] Set breakpoint by URL/line.
+* [ ] Trigger breakpoint.
+* [ ] Confirm debugger reports paused state.
+* [ ] Read call stack.
+* [ ] Read local scope.
+* [ ] Read closure scope.
+* [ ] Read global scope.
+* [ ] Inspect variables.
+* [ ] Inspect nested object variables.
+* [ ] Evaluate expression in selected frame.
+* [ ] Change a local variable.
+* [ ] Resume execution.
+* [ ] Confirm modified variable changes behavior.
+* [ ] Step over.
+* [ ] Step into.
+* [ ] Step out.
+* [ ] Pause manually.
+* [ ] Resume manually.
+* [ ] Pause on uncaught exceptions.
+* [ ] Pause on all exceptions.
+* [ ] Remove breakpoint.
+* [ ] Confirm debugger remains scoped to intended target.
+
+## 26. DOM/Event/XHR Breakpoints
+
+* [ ] Break when subtree changes.
+* [ ] Break when attribute changes.
+* [ ] Break when node is removed.
+* [ ] Trigger each condition.
+* [ ] Confirm responsible JavaScript frame is reported.
+* [ ] Break on a click event.
+* [ ] Break on an XHR/fetch matching a URL.
+* [ ] Trigger matching request.
+* [ ] Confirm debugger pauses correctly.
+
+## 27. Real DevTools Window
+
+* [ ] Open DevTools Elements panel.
+* [ ] Open Console panel.
+* [ ] Open Network panel.
+* [ ] Open Sources panel.
+* [ ] Open Performance/timeline panel.
+* [ ] Open heap-profiler panel.
+* [ ] Confirm DevTools targets the intended page.
+* [ ] Confirm opening DevTools does not disrupt browserd recording.
+* [ ] Confirm multiple browser instances open their own correct DevTools.
+
+## 28. Heap Snapshot
+
+* [ ] Take baseline heap snapshot.
+* [ ] Confirm snapshot streams to disk.
+* [ ] Confirm browserd remains responsive while snapshot is taken.
+* [ ] Perform memory-heavy operation.
+* [ ] Take second snapshot.
+* [ ] Compare snapshots.
+* [ ] Verify constructor/object count differences.
+* [ ] Verify size differences.
+* [ ] Detect intentionally retained objects.
+* [ ] Detect detached DOM nodes where possible.
+* [ ] Export summary.
+* [ ] Confirm full heap file is not sent into LLM context.
+
+## 29. Heap Sampling / Allocation Tracking
+
+* [ ] Start heap sampling.
+* [ ] Perform test workload.
+* [ ] Stop sampling.
+* [ ] Retrieve allocation profile.
+* [ ] Verify stack attribution.
+* [ ] Start object tracking.
+* [ ] Generate allocations.
+* [ ] Stop tracking.
+* [ ] Call explicit garbage collection where supported.
+* [ ] Confirm retained allocation behavior is analyzable.
+
+## 30. Native/Browser Memory Metrics
+
+* [ ] Read DOM counters.
+* [ ] Read browser/renderer memory metrics.
+* [ ] Start native allocation sampling.
+* [ ] Run workload.
+* [ ] Stop sampling.
+* [ ] Verify profile data.
+* [ ] Prepare leak-detection mode.
+* [ ] Verify unsupported raw-memory operations are rejected clearly.
+
+## 31. CPU Profiling
+
+* [ ] Start CPU profile.
+* [ ] Run CPU-heavy page code.
+* [ ] Stop profile.
+* [ ] Confirm `.cpuprofile` artifact is generated.
+* [ ] Calculate top functions.
+* [ ] Calculate percentage CPU per function.
+* [ ] Verify intentionally expensive function ranks near top.
+* [ ] Export summary.
+* [ ] Open profile in compatible DevTools tooling if desired.
+
+## 32. Performance Tracing
+
+* [ ] Start trace.
+* [ ] Perform navigation.
+* [ ] Perform heavy interaction.
+* [ ] Stop trace.
+* [ ] Confirm trace is streamed to artifact storage.
+* [ ] Identify long tasks.
+* [ ] Identify layout work.
+* [ ] Identify scripting work.
+* [ ] Identify rendering/painting work where available.
+* [ ] Correlate trace timestamps with network/console timeline.
+* [ ] Confirm very large trace does not overwhelm MCP.
+
+## 33. Continuous Performance Metrics
+
+* [ ] Record metrics while idle.
+* [ ] Record metrics during heavy activity.
+* [ ] Query by time range.
+* [ ] Verify JS heap metrics.
+* [ ] Verify DOM node counts.
+* [ ] Verify event-listener counts where available.
+* [ ] Verify script duration.
+* [ ] Verify layout/style duration.
+* [ ] Verify relevant web-vital/timeline metrics.
+* [ ] Compare two time ranges.
+
+## 34. Chromium Process Monitoring
+
+* [ ] Detect browser process.
+* [ ] Detect renderer processes.
+* [ ] Detect GPU process.
+* [ ] Detect utility processes.
+* [ ] Correlate renderer with tabs/targets where possible.
+* [ ] Record CPU usage.
+* [ ] Record RSS/memory.
+* [ ] Record process exit.
+* [ ] Kill a test renderer.
+* [ ] Confirm browserd records crash/disconnect properly.
+
+## 35. Clock Control
+
+Use a page with `Date.now`, timers, intervals, animation frames.
+
+* [ ] Install fake clock.
+* [ ] Set known date/time.
+* [ ] Verify `Date.now()`.
+* [ ] Verify `new Date()`.
+* [ ] Verify `performance.now()` behavior as intended.
+* [ ] Verify `setTimeout`.
+* [ ] Verify `setInterval`.
+* [ ] Verify `requestAnimationFrame`.
+* [ ] Run time forward 5 minutes.
+* [ ] Confirm due timers execute.
+* [ ] Jump time forward 5 minutes.
+* [ ] Confirm jump semantics differ appropriately.
+* [ ] Freeze time.
+* [ ] Verify wall clock stays frozen.
+* [ ] Resume clock.
+* [ ] Test midnight rollover.
+* [ ] Test month rollover.
+* [ ] Test year rollover.
+* [ ] Test expiry logic.
+* [ ] Reset clock to normal.
+
+## 36. Timezone Emulation
+
+* [ ] Set `Asia/Kolkata`.
+* [ ] Verify page timezone.
+* [ ] Set `America/New_York`.
+* [ ] Verify page timezone.
+* [ ] Set `Europe/London`.
+* [ ] Test date formatting.
+* [ ] Test DST-sensitive application behavior.
+* [ ] Reset timezone.
+
+## 37. CPU Throttling
+
+* [ ] Run workload with CPU rate 1×.
+* [ ] Record baseline performance.
+* [ ] Set 2× slowdown.
+* [ ] Repeat workload.
+* [ ] Set 4× slowdown.
+* [ ] Repeat workload.
+* [ ] Set 6× slowdown.
+* [ ] Repeat workload.
+* [ ] Confirm measured durations increase meaningfully.
+* [ ] Reset throttling.
+* [ ] Confirm browser returns to normal.
+
+## 38. Network Simulation
+
+* [ ] Set increased latency.
+* [ ] Confirm network timing reflects delay.
+* [ ] Limit download throughput.
+* [ ] Limit upload throughput.
+* [ ] Apply slow-network preset.
+* [ ] Test offline mode.
+* [ ] Confirm `navigator.onLine` behavior if intended.
+* [ ] Restore normal network.
+* [ ] Confirm network recorder captures simulated conditions.
+
+## 39. Network Fault Injection
+
+* [ ] Delay matching request.
+* [ ] Abort matching request.
+* [ ] Replace response body.
+* [ ] Change status to 500.
+* [ ] Return malformed JSON.
+* [ ] Drop only the next matching request.
+* [ ] Apply rule to only one URL pattern.
+* [ ] Confirm unrelated requests are unaffected.
+* [ ] Remove fault.
+* [ ] Confirm normal behavior resumes.
+* [ ] Confirm injected faults are logged in unified timeline.
+
+## 40. Cache & Service Worker Testing
+
+* [ ] Disable browser cache.
+* [ ] Reload.
+* [ ] Verify resources reload.
+* [ ] Enable cache.
+* [ ] Clear cache.
+* [ ] Bypass Service Worker.
+* [ ] Reload.
+* [ ] Confirm request path changes.
+* [ ] Restore Service Worker.
+* [ ] Confirm state restoration.
+
+## 41. Device Emulation
+
+* [ ] Desktop viewport.
+* [ ] Mobile viewport.
+* [ ] Tablet viewport.
+* [ ] Custom width/height.
+* [ ] Custom DPR.
+* [ ] Portrait orientation.
+* [ ] Landscape orientation.
+* [ ] Touch enabled.
+* [ ] Take screenshots at each size.
+* [ ] Confirm responsive layout changes.
+* [ ] Inspect CSS media-rule effects.
+
+## 42. Geolocation
+
+* [ ] Set known latitude/longitude.
+* [ ] Verify application receives it.
+* [ ] Change location.
+* [ ] Verify application updates.
+* [ ] Simulate unavailable geolocation.
+* [ ] Reset location.
+
+## 43. Permissions
+
+* [ ] Grant test permission.
+* [ ] Confirm page sees permission.
+* [ ] Deny permission.
+* [ ] Confirm failure path.
+* [ ] Reset permission.
+* [ ] Repeat for supported permissions such as geolocation/notifications/clipboard.
+* [ ] Confirm permissions are scoped correctly.
+
+## 44. Environmental Emulation
+
+* [ ] Set dark color scheme.
+* [ ] Verify CSS/media behavior.
+* [ ] Set light color scheme.
+* [ ] Enable reduced motion.
+* [ ] Verify animations adapt.
+* [ ] Emulate supported vision deficiency.
+* [ ] Take screenshot.
+* [ ] Reset environment.
+
+## 45. Idle / User State Simulation
+
+* [ ] Simulate active user.
+* [ ] Simulate idle user.
+* [ ] Verify application behavior.
+* [ ] Simulate locked state where supported.
+* [ ] Restore active/unlocked state.
+
+## 46. Sensor Emulation
+
+If implemented:
+
+* [ ] Simulate accelerometer.
+* [ ] Simulate gyroscope.
+* [ ] Simulate orientation.
+* [ ] Simulate ambient light.
+* [ ] Confirm application receives test values.
+* [ ] Reset sensors.
+
+## 47. Scenario Presets
+
+* [ ] Apply `slow-mobile`.
+* [ ] Verify expected viewport/network/CPU settings.
+* [ ] Apply `terrible-network`.
+* [ ] Verify expected network settings.
+* [ ] Apply `offline`.
+* [ ] Verify browser behavior.
+* [ ] Apply `slow-cpu`.
+* [ ] Verify CPU rate.
+* [ ] Apply `memory-leak` instrumentation preset.
+* [ ] Reset scenario.
+* [ ] Confirm all changed environment state is restored.
+
+## 48. Automated Test Orchestration
+
+* [ ] Start `test.begin`.
+* [ ] Perform page actions.
+* [ ] Create checkpoint.
+* [ ] Record assertion.
+* [ ] Perform simulated-time action.
+* [ ] Record another assertion.
+* [ ] End test.
+* [ ] Confirm test manifest is stored.
+* [ ] Confirm network logs are linked.
+* [ ] Confirm console logs are linked.
+* [ ] Confirm screenshots are linked.
+* [ ] Confirm test timeline is ordered correctly.
+* [ ] Confirm failure produces useful diagnostics.
+
+## 49. Unified Timeline
+
+Generate events from many systems close together.
+
+* [ ] Start test session.
+* [ ] Click an element.
+* [ ] Trigger request.
+* [ ] Trigger console warning.
+* [ ] Trigger DOM update.
+* [ ] Trigger network fault.
+* [ ] Take screenshot.
+* [ ] Trigger debugger pause.
+* [ ] Resume.
+* [ ] Stop test.
+* [ ] Query unified timeline.
+* [ ] Confirm timestamps are comparable.
+* [ ] Confirm ordering is correct.
+* [ ] Confirm each event links to its underlying artifact/record.
+
+## 50. Artifact System
+
+* [ ] Store screenshot artifact.
+* [ ] Store network body artifact.
+* [ ] Store HAR artifact.
+* [ ] Store console export.
+* [ ] Store trace.
+* [ ] Store CPU profile.
+* [ ] Store heap snapshot.
+* [ ] Store DOM snapshot.
+* [ ] Call `artifact.stat`.
+* [ ] Read full small artifact.
+* [ ] Read byte range from large artifact.
+* [ ] Read line range.
+* [ ] Search artifact.
+* [ ] Query JSON artifact.
+* [ ] Export/copy artifact.
+* [ ] Verify invalid artifact IDs fail cleanly.
+* [ ] Verify deleted artifacts are handled cleanly.
+* [ ] Verify paths cannot escape the configured artifact directory.
+
+## 51. Historical Sessions
+
+* [ ] Record Browser Session A.
+* [ ] Close browser.
+* [ ] Restart browserd.
+* [ ] Connect fresh MCP client.
+* [ ] List historical recording sessions.
+* [ ] Query Session A network records.
+* [ ] Query Session A console records.
+* [ ] Open Session A screenshots.
+* [ ] Open Session A traces.
+* [ ] Confirm live operations on the dead session are rejected clearly.
+* [ ] Confirm historical data survives daemon restart.
+* [ ] Restart machine if practical.
+* [ ] Confirm historical sessions still exist afterward.
+
+## 52. Browserd Crash Recovery
+
+* [ ] Start browser and recording.
+* [ ] Force-kill browserd.
+* [ ] Confirm browser itself remains usable if designed that way.
+* [ ] Restart browserd.
+* [ ] Confirm it recovers persisted metadata.
+* [ ] Confirm it can reconnect to running browsers where supported.
+* [ ] Confirm new recording data works.
+* [ ] Confirm partially written artifacts are handled safely.
+
+## 53. Browser Crash Recovery
+
+* [ ] Start browser.
+* [ ] Force-kill Chromium.
+* [ ] Confirm browserd detects disconnect.
+* [ ] Confirm recording session is finalized.
+* [ ] Confirm stored network/console data remains readable.
+* [ ] Relaunch browser.
+* [ ] Confirm a new live instance/session starts cleanly.
+
+## 54. Multiple MCP Clients
+
+* [ ] Connect MCP Client A.
+* [ ] Connect MCP Client B.
+* [ ] Both call `browser.list()`.
+* [ ] Both read network history.
+* [ ] Client A controls Browser A.
+* [ ] Client B inspects Browser A simultaneously.
+* [ ] Confirm no data corruption.
+* [ ] Confirm operations have client/request IDs in audit logs.
+* [ ] Test simultaneous mutating calls.
+* [ ] Verify locking/control policy works.
+
+## 55. Raw CDP Escape Hatch
+
+* [ ] Call a harmless CDP command.
+* [ ] Confirm result is returned correctly.
+* [ ] Call target-specific CDP method.
+* [ ] Confirm correct session is selected.
+* [ ] Request unknown CDP method.
+* [ ] Confirm useful error returned.
+* [ ] Send invalid parameters.
+* [ ] Confirm browserd remains healthy.
+* [ ] Confirm restricted commands follow configured security policy.
+
+## 56. Extension Integration
+
+* [ ] Launch browser with extension enabled.
+* [ ] Confirm extension UI works.
+* [ ] Confirm extension service worker is discoverable where expected.
+* [ ] Confirm extension logs are capturable if intended.
+* [ ] Confirm extension does not break CDP recording.
+* [ ] Restart browser and verify extension persists.
+* [ ] Test multiple custom extensions.
+
+## 57. Security & Isolation
+
+* [ ] Confirm MCP binds only to intended local interface by default.
+* [ ] Confirm unauthorized remote clients cannot connect.
+* [ ] Verify MCP authentication if implemented.
+* [ ] Verify browser IDs cannot access another user's daemon.
+* [ ] Verify filesystem paths are sanitized.
+* [ ] Verify artifact path traversal is blocked.
+* [ ] Verify arbitrary file reads outside artifact store are blocked unless explicitly designed.
+* [ ] Verify browser profiles are isolated.
+* [ ] Verify Browser A storage cannot be accidentally modified through Browser B handle.
+* [ ] Verify raw CDP commands are permission-controlled.
+* [ ] Verify mutating commands can be disabled in observe mode.
+* [ ] Verify network logs containing secrets are treated as sensitive data.
+* [ ] Verify an option exists to redact/export safely where required.
+* [ ] Verify audit log captures AI mutations.
+
+## 58. Resource & Stability Testing
+
+* [ ] Browse for 1 hour.
+* [ ] Browse for several hours.
+* [ ] Generate 10,000 network requests.
+* [ ] Generate 100,000 console messages.
+* [ ] Open 50+ tabs if machine permits.
+* [ ] Repeatedly create/destroy workers.
+* [ ] Record large response bodies.
+* [ ] Monitor browserd RAM usage.
+* [ ] Monitor browserd CPU usage.
+* [ ] Confirm SQLite remains responsive.
+* [ ] Confirm log querying stays usable.
+* [ ] Confirm storage rotation/retention policy works.
+* [ ] Confirm object handles are released.
+* [ ] Confirm CDP sessions are removed when targets disappear.
+* [ ] Confirm no obvious long-running memory leak.
+
+## 59. Query Performance
+
+Populate a large test recording.
+
+* [ ] Search 100,000 network records.
+* [ ] Filter by URL.
+* [ ] Filter by status.
+* [ ] Filter by method.
+* [ ] Filter by MIME type.
+* [ ] Filter by time.
+* [ ] Search 100,000 console records.
+* [ ] Paginate results.
+* [ ] Query artifacts.
+* [ ] Confirm useful indexes exist.
+* [ ] Confirm responses remain AI-sized.
+* [ ] Confirm huge datasets never automatically enter MCP response bodies.
+
+## 60. Complete Autonomous Debugging Test
+
+Create an intentionally broken application with:
+
+```text
+frontend visual bug
+console error
+failed API request
+incorrect payload
+large JSON response
+storage state
+slow function
+small memory leak
+```
+
+Then tell a fresh AI session only:
+
+```text
+"Something is wrong with this app. Find the problems."
+```
+
+Verify the AI can independently:
+
+* [ ] Discover the browser.
+* [ ] Discover the correct tab.
+* [ ] Take screenshot.
+* [ ] Visually identify suspicious UI.
+* [ ] Inspect relevant DOM.
+* [ ] Inspect CSS.
+* [ ] Highlight the element.
+* [ ] Read console errors.
+* [ ] Find failed network request.
+* [ ] Read request headers.
+* [ ] Read request payload.
+* [ ] Read response headers.
+* [ ] Read response body.
+* [ ] Search large response through artifact tools.
+* [ ] Find JavaScript source involved.
+* [ ] Set breakpoint.
+* [ ] Reproduce problem.
+* [ ] Inspect variables.
+* [ ] Inspect session/local storage.
+* [ ] Profile slow behavior.
+* [ ] Identify memory increase if included.
+* [ ] Explain root cause with evidence from the browser.
+
+If this works, the central product concept works.
+
+## 61. Complete Automated Testing Test
+
+Ask the AI:
+
+```text
+"Test this checkout page under bad conditions."
+```
+
+Verify it can autonomously:
+
+* [ ] Apply mobile viewport.
+* [ ] Apply CPU throttling.
+* [ ] Apply slow network.
+* [ ] Navigate through checkout.
+* [ ] Inject a delayed API response.
+* [ ] Inject an HTTP 500 response.
+* [ ] Simulate offline mode.
+* [ ] Restore online mode.
+* [ ] Manipulate clock to test expiration.
+* [ ] Test another timezone.
+* [ ] Take screenshots after important steps.
+* [ ] Inspect console failures.
+* [ ] Inspect network failures.
+* [ ] Inspect DOM state.
+* [ ] Create performance trace.
+* [ ] Produce an evidence-backed test result.
+
+## 62. Final Acceptance Test
+
+The system is ready when this entire scenario works:
+
+* [ ] Launch the special browser like a normal browser.
+* [ ] Do not connect any AI.
+* [ ] Browse manually.
+* [ ] Open multiple tabs.
+* [ ] Trigger application activity.
+* [ ] Let browserd continuously record everything.
+* [ ] Later open a completely fresh AI/MCP session.
+* [ ] AI discovers the already-running browser.
+* [ ] AI sees all open tabs.
+* [ ] AI can screenshot any tab.
+* [ ] AI can visually inspect the page.
+* [ ] AI can navigate/click/type/scroll.
+* [ ] AI can inspect HTML/DOM.
+* [ ] AI can inspect and modify CSS.
+* [ ] AI can highlight/pick elements.
+* [ ] AI can read historical console logs.
+* [ ] AI can execute JavaScript.
+* [ ] AI can inspect every captured network request.
+* [ ] AI can see request headers.
+* [ ] AI can see payloads.
+* [ ] AI can see response headers.
+* [ ] AI can retrieve response bodies.
+* [ ] AI can search/export huge responses instead of loading them all.
+* [ ] AI can inspect WebSockets.
+* [ ] AI can read/edit storage.
+* [ ] AI can use JavaScript debugger.
+* [ ] AI can inspect scopes and variables.
+* [ ] AI can use DOM/event/XHR breakpoints.
+* [ ] AI can take heap snapshots.
+* [ ] AI can profile CPU.
+* [ ] AI can capture performance traces.
+* [ ] AI can inspect process/memory footprint.
+* [ ] AI can control browser time.
+* [ ] AI can fast-forward timers.
+* [ ] AI can change timezone.
+* [ ] AI can throttle CPU.
+* [ ] AI can throttle/break the network.
+* [ ] AI can emulate devices.
+* [ ] AI can simulate location/environment.
+* [ ] AI can run test scenarios.
+* [ ] AI can save large debugging data as artifacts.
+* [ ] Another fresh MCP session can later inspect the same recorded history.
+* [ ] Browser remains usable by the human throughout.
+
+If all of those pass, you have successfully built the intended system:
+
+**a persistent human-usable browser with always-on DevTools-grade recording, full automation/debugging/profiling/testing capabilities, and an MCP interface that any fresh authorized AI session can discover and use at any time.**

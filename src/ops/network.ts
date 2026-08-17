@@ -7,7 +7,7 @@ import {
 } from '../store/network-store.js';
 import { toWebSocketView, toWsMessageView } from '../store/websocket-store.js';
 import { AgentBrowserError, NotFoundError } from '../util/errors.js';
-import { parseSince, type OpsContext } from './context.js';
+import { parseSince, resolveBrowserScope, type OpsContext } from './context.js';
 
 export interface NetworkQueryArgs {
   browser_id?: string;
@@ -35,8 +35,10 @@ export interface NetworkQueryArgs {
  * when nothing is open yet.
  */
 async function scope(ctx: OpsContext, args: NetworkQueryArgs): Promise<RequestFilter> {
-  const instance = await ctx.registry.resolve(args.browser_id);
-  const filter: RequestFilter = { browserId: instance.id };
+  // Queries read recorded history, so a browser that has since closed is still
+  // a valid scope. Only live control needs a running instance.
+  const { browserId } = await resolveBrowserScope(ctx, args.browser_id);
+  const filter: RequestFilter = { browserId };
   if (args.target_id) filter.targetHandle = args.target_id;
   if (args.url_contains) filter.urlContains = args.url_contains;
   if (args.url_regex) filter.urlRegex = args.url_regex;

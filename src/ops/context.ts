@@ -1,3 +1,4 @@
+import { NotFoundError } from '../util/errors.js';
 import type { BrowserRegistry } from '../browser/registry.js';
 import type { DaemonConfig } from '../config.js';
 import type { Stores } from '../store/index.js';
@@ -32,4 +33,34 @@ export function parseSince(value: string | number | undefined): number | undefin
   if (!Number.isNaN(parsed)) return parsed;
   const asNumber = Number(trimmed);
   return Number.isNaN(asNumber) ? undefined : asNumber;
+}
+
+/**
+ * Resolve the browser a *query* should read, allowing browsers that have since
+ * closed.
+ *
+ * Live control needs a running instance, but reading recorded history does not:
+ * the rows are in SQLite and the blobs are on disk long after Chromium exits.
+ * Requiring a live browser to answer "what did that request return yesterday"
+ * would throw away the whole point of recording to durable storage.
+ *
+ * Returns the browser id to filter on, or undefined to mean "every browser".
+ */
+export async function resolveBrowserScope(
+  ctx: OpsContext,
+  browserId?: string,
+): Promise<{ browserId: string; live: boolean }> {
+  if (browserId) {
+    const live = ctx.registry.find(browserId);
+    if (live) return { browserId: live.id, live: true };
+
+    // Not running - but it may still have recorded history.
+    const row = ctx.stores.targets.getBrowser(browserId);
+    if (row) return { browserId, live: false };
+
+    throw new NotFoundError('browser', browserId);
+  }
+
+  const instance = await ctx.registry.resolve();
+  return { browserId: instance.id, live: true };
 }

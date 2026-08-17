@@ -158,8 +158,11 @@ npm run open                     # or: node dist/cli.js open
 node dist/cli.js open --url https://localhost:3000
 ```
 
-Windows users can double-click **`launchers/AI Browser.bat`** instead; there is
-an `ai-browser.sh` beside it for macOS and Linux.
+Or skip the commands entirely: double-click **`launchers/AI Browser.bat`**
+(macOS and Linux: `launchers/ai-browser.sh`). It is a menu — open a browser, open
+one at a URL, pick a profile, see what is running, check disk usage, clean up, or
+register with your AI client. It shows running browsers at the top, offers to
+build itself on first run, and accepts `localhost:3000` as readily as a full URL.
 
 A normal Chromium window opens with your persistent profile and the capture
 panel installed. **Use it however you like.** From the moment it starts, network,
