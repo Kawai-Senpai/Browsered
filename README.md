@@ -1,17 +1,20 @@
 <div align="center">
 
-# browserd
+<img src="brand/banner.svg" alt="browserd — record first, query later" width="100%">
 
-**A continuously-recording Chromium with programmable DevTools, exposed to AI over MCP.**
+<br>
 
-Not "Playwright driven by an LLM" — a browser daemon that records everything it sees,
-so your agent can ask about traffic that happened before you thought to ask.
+**Not "Playwright driven by an LLM" — a browser daemon that records everything it sees,
+so your agent can ask about traffic that happened before you thought to ask.**
 
-[![Node](https://img.shields.io/badge/node-%E2%89%A520.11-3c873a)](https://nodejs.org)
-[![TypeScript](https://img.shields.io/badge/typescript-5.9-3178c6)](https://www.typescriptlang.org/)
-[![MCP](https://img.shields.io/badge/MCP-1.30-6b46c1)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-174-0ea5e9)](#the-tool-surface)
-[![Tests](https://img.shields.io/badge/live%20tests-152%20passing-16a34a)](#testing)
+<br>
+
+[![tools](https://img.shields.io/badge/tools-174-26C08A?style=flat-square&labelColor=16181C)](#the-tool-surface)
+[![tests](https://img.shields.io/badge/live%20tests-164%20passing-26C08A?style=flat-square&labelColor=16181C)](#testing)
+[![protocol](https://img.shields.io/badge/MCP-1.30-8A9199?style=flat-square&labelColor=16181C)](https://modelcontextprotocol.io)
+[![runtime](https://img.shields.io/badge/node-%E2%89%A520.11-8A9199?style=flat-square&labelColor=16181C)](https://nodejs.org)
+[![data](https://img.shields.io/badge/data-local%20only-D99A2B?style=flat-square&labelColor=16181C)](#security-notes)
+[![license](https://img.shields.io/badge/license-MIT-8A9199?style=flat-square&labelColor=16181C)](LICENSE)
 
 </div>
 
@@ -27,14 +30,9 @@ over its shoulder. It holds a persistent CDP connection, records network, consol
 exceptions and navigations **continuously**, and stores them in SQLite. When the model
 finally asks a question, it queries a database — not the browser.
 
-```
-   AI ──MCP──> browserd ──CDP──> Chromium (headed, yours to use)
-                  │
-                  ├── network recorder ──┐
-                  ├── console recorder ──┼──> SQLite + content-addressed blobs
-                  ├── page recorder ─────┤
-                  └── target manager ────┘        (bodies, traces, heap snapshots)
-```
+<div align="center">
+  <img src="brand/flow.svg" alt="Chromium pushes CDP events into always-on recorders that persist to SQLite and blobs; the agent queries that store over MCP rather than asking the browser." width="100%">
+</div>
 
 The difference matters. Ask a normal browser-automation MCP "why did checkout fail?"
 and it has nothing — the request is gone. Ask `browserd` and it has the payload, the
@@ -270,6 +268,7 @@ npm test                      # build + live MCP suite + HTTP suite
 npm run test:live             # 117 checks: real MCP client, real Chromium, local fixture
 npm run test:live:headed      # same, with a visible window
 npm run test:deep             # 35 checks against a real public site
+npm run test:extension        # 7 checks: the bundled panel in a real browser
 npm run test:http             # Streamable HTTP transport + origin guard
 npm run test:real             # headed narrated walkthrough on live sites
 ```
@@ -423,6 +422,21 @@ Data lives in `~/.agent-browser` (`AGENTBROWSER_HOME` to move it): `browserd.db`
 
 ---
 
+## Credits
+
+Designed and built by **[Ranit Bhowmick](https://ranitbhowmick.com)**.
+
+The bundled capture panel is [Context Capsule](extensions/context-capsule), also
+by the same author — see [`brand/BRAND.md`](brand/BRAND.md) for browserd's own
+design system.
+
 ## License
 
-MIT
+MIT © [Ranit Bhowmick](https://ranitbhowmick.com)
+
+---
+
+<div align="center">
+<sub><b>record first · query later</b><br>
+The automation is the least interesting thing it does.</sub>
+</div>

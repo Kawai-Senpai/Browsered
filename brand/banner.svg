@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420" role="img" aria-label="browserd — record first, query later. A continuously-recording Chromium with programmable DevTools, exposed to AI over MCP.">
+  <title>browserd</title>
+
+  <!--
+    Flat and matte. No gradients, no grid, no glow: depth is a surface step
+    (16181C field, 1E2126 raised, 262A30 above that) the way Material separates
+    planes by elevation.
+
+    Accents are desaturated deliberately - this is a tool that sits open for
+    hours, not a neon sign.
+  -->
+
+  <defs>
+    <clipPath id="b-scope">
+      <rect x="640" y="52" width="504" height="316" rx="2"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1200" height="420" fill="#16181C"/>
+
+  <!-- ══════════════ Left: identity ══════════════ -->
+
+  <g transform="translate(60 54) scale(0.6875)">
+    <rect x="0" y="0" width="128" height="128" rx="12" fill="#1E2126"/>
+    <rect x="26" y="40" width="46" height="8" rx="4" fill="#8A9199"/>
+    <rect x="26" y="88" width="34" height="8" rx="4" fill="#8A9199"/>
+    <rect x="26" y="64" width="60" height="8" rx="4" fill="#26C08A"/>
+    <circle cx="94" cy="68" r="9" fill="#26C08A"/>
+  </g>
+
+  <text x="60" y="212"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="62" font-weight="700" letter-spacing="-2.4" fill="#DDE1E6">browserd</text>
+
+  <text x="62" y="244"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="14" letter-spacing="2.6" fill="#26C08A">RECORD FIRST · QUERY LATER</text>
+
+  <text x="60" y="286"
+        font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif"
+        font-size="16.5" fill="#8A9199">A continuously-recording Chromium with programmable</text>
+  <text x="60" y="309"
+        font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif"
+        font-size="16.5" fill="#8A9199">DevTools, exposed to AI over MCP.</text>
+
+  <!-- Capability chips -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#8A9199">
+    <rect x="60" y="336" width="92" height="24" rx="12" fill="#1E2126"/>
+    <text x="106" y="352" text-anchor="middle">174 TOOLS</text>
+
+    <rect x="160" y="336" width="72" height="24" rx="12" fill="#1E2126"/>
+    <text x="196" y="352" text-anchor="middle">SQLITE</text>
+
+    <rect x="240" y="336" width="98" height="24" rx="12" fill="#1E2126"/>
+    <text x="289" y="352" text-anchor="middle">LOCAL-ONLY</text>
+
+    <rect x="346" y="336" width="86" height="24" rx="12" fill="#1E2126"/>
+    <text x="389" y="352" text-anchor="middle">RAW CDP</text>
+  </g>
+
+  <!-- ══════════════ Right: the scope ══════════════ -->
+
+  <g clip-path="url(#b-scope)">
+    <rect x="640" y="52" width="504" height="316" fill="#1E2126"/>
+
+    <!-- Title bar: one step up -->
+    <rect x="640" y="52" width="504" height="34" fill="#262A30"/>
+    <circle cx="662" cy="69" r="4.5" fill="#26C08A"/>
+    <text x="678" y="74"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="12" fill="#DDE1E6">browserd — recording</text>
+    <text x="1124" y="74" text-anchor="end"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="11" fill="#8A9199">br_1d514bc</text>
+
+    <!-- Column header -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#8A9199">
+      <text x="662" y="106">STATUS</text>
+      <text x="716" y="106">METHOD</text>
+      <text x="782" y="106">URL</text>
+      <text x="1044" y="106" text-anchor="end">SIZE</text>
+      <text x="1124" y="106" text-anchor="end">TIME</text>
+    </g>
+    <line x1="640" y1="114" x2="1144" y2="114" stroke="#31363E" stroke-width="1"/>
+
+    <!-- Recorded requests -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">
+      <text x="662" y="136" fill="#26C08A">200</text>
+      <text x="716" y="136" fill="#8A9199">GET</text>
+      <text x="782" y="136" fill="#DDE1E6">/checkout</text>
+      <text x="1044" y="136" text-anchor="end" fill="#8A9199">34.4 kB</text>
+      <text x="1124" y="136" text-anchor="end" fill="#D99A2B">218 ms</text>
+
+      <text x="662" y="160" fill="#26C08A">200</text>
+      <text x="716" y="160" fill="#8A9199">GET</text>
+      <text x="782" y="160" fill="#DDE1E6">/assets/app.f81d2.js</text>
+      <text x="1044" y="160" text-anchor="end" fill="#8A9199">412 kB</text>
+      <text x="1124" y="160" text-anchor="end" fill="#D99A2B">602 ms</text>
+
+      <!-- The failure: a surface step, not a wash of colour -->
+      <rect x="640" y="170" width="504" height="26" fill="#262A30"/>
+      <rect x="640" y="170" width="2" height="26" fill="#D9534F"/>
+      <text x="662" y="188" fill="#D9534F">400</text>
+      <text x="716" y="188" fill="#8A9199">POST</text>
+      <text x="782" y="188" fill="#DDE1E6">/api/payment</text>
+      <text x="1044" y="188" text-anchor="end" fill="#8A9199">1.2 kB</text>
+      <text x="1124" y="188" text-anchor="end" fill="#D99A2B">2813 ms</text>
+
+      <text x="662" y="212" fill="#26C08A">204</text>
+      <text x="716" y="212" fill="#8A9199">POST</text>
+      <text x="782" y="212" fill="#DDE1E6">/api/analytics</text>
+      <text x="1044" y="212" text-anchor="end" fill="#8A9199">0 B</text>
+      <text x="1124" y="212" text-anchor="end" fill="#D99A2B">41 ms</text>
+    </g>
+
+    <!-- The answer the recording makes possible -->
+    <line x1="640" y1="228" x2="1144" y2="228" stroke="#31363E" stroke-width="1"/>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">
+      <text x="662" y="250" fill="#8A9199">request body</text>
+      <text x="782" y="250" fill="#DDE1E6">{"cardToken":"tok_92","currency":"USD"}</text>
+
+      <text x="662" y="272" fill="#8A9199">response</text>
+      <text x="782" y="272" fill="#D9534F">{"error":"missing field","field":"amount"}</text>
+
+      <text x="662" y="294" fill="#8A9199">console</text>
+      <text x="782" y="294" fill="#D9534F">TypeError at submitPayment (payment.ts:182)</text>
+
+      <text x="662" y="316" fill="#8A9199">source</text>
+      <text x="782" y="316" fill="#DDE1E6">src/payment.ts:164 — amount never sent</text>
+    </g>
+
+    <!-- Footer -->
+    <rect x="640" y="332" width="504" height="36" fill="#262A30"/>
+    <text x="662" y="354"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="10.5" fill="#8A9199">network · console · exceptions · navigations — recorded continuously</text>
+  </g>
+
+  <rect x="640" y="52" width="504" height="316" rx="2"
+        fill="none" stroke="#31363E" stroke-width="1"/>
+
+  <!-- Live tape indicator -->
+  <g>
+    <rect x="470" y="196" width="140" height="26" rx="13" fill="#1E2126"/>
+    <circle cx="490" cy="209" r="5" fill="#26C08A"/>
+    <text x="504" y="213"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="11" letter-spacing="0.8" fill="#26C08A">REC</text>
+    <path d="M556 209 H626" stroke="#31363E" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <path d="M620 204 L630 209 L620 214 Z" fill="#8A9199"/>
+  </g>
+</svg>

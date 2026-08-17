@@ -2,6 +2,10 @@
   "name": "agent-browser",
   "version": "0.1.0",
   "description": "browserd: a continuously-recording Chromium daemon with programmable DevTools, exposed to AI over MCP",
+  "author": {
+    "name": "Ranit Bhowmick",
+    "url": "https://ranitbhowmick.com"
+  },
   "type": "module",
   "bin": {
     "browserd": "./dist/cli.js"
