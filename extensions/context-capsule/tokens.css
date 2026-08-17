@@ -1,0 +1,91 @@
+/*
+ * Context Capsule — design tokens.
+ *
+ * Editorial brutalism: paper white, heavy black display type, one loud yellow.
+ * The panel sits beside the app you are debugging, so it does not try to blend
+ * in — it reads like a printed worksheet with four numbered steps.
+ *
+ * Colour still carries fixed meaning and the meanings never swap:
+ *   yellow  the thing to press next
+ *   black   structure, primary action
+ *   blue    a tool you are holding
+ *   red     your annotation, and destructive actions
+ *   green   a confirmed fact
+ */
+
+:root {
+  /* Field */
+  --paper: #ffffff;
+  --paper-2: #f4f2ed;
+  --paper-3: #e8e5dd;
+  --ink: #0a0a0a;
+  --ink-soft: #3d3d3d;
+  --ink-mute: #7a7873;
+  --line: #0a0a0a;
+  --line-soft: #d8d5cc;
+
+  /*
+   * Fixed anchors. --ink and --paper swap in dark mode, but the yellow, the
+   * red and the black tape band do not — so anything sitting on one of those
+   * needs a colour that never inverts. Using --ink there is what put white
+   * type on a yellow block.
+   */
+  --always-ink: #0a0a0a;
+  --always-paper: #ffffff;
+
+  /* Meaning */
+  --yellow: #ffe047;
+  --yellow-deep: #f0c800;
+  --blue: #2f6bff;
+  --blue-soft: #dde6ff;
+  --red: #ff4d3d;
+  --red-soft: #ffe2df;
+  --green: #1faa5f;
+  --green-soft: #d8f5e4;
+
+  /* Form — hard edges. Roundness is reserved for pills and the mark. */
+  --r-sm: 0px;
+  --r-md: 0px;
+  --r-lg: 0px;
+  --r-pill: 999px;
+
+  --border: 2px solid var(--ink);
+  --border-hair: 1px solid var(--line-soft);
+
+  --gap-1: 6px;
+  --gap-2: 10px;
+  --gap-3: 14px;
+  --gap-4: 20px;
+
+  --sans: "Archivo", "Helvetica Neue", Inter, ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Offset shadow, not blur — the reference stacks flat planes. */
+  --shadow-1: 3px 3px 0 var(--ink);
+  --shadow-2: 5px 5px 0 var(--ink);
+  --ring: 0 0 0 3px var(--yellow);
+
+  --ease: cubic-bezier(0.2, 0.8, 0.25, 1);
+}
+
+/*
+ * Dark mode inverts the field but keeps the yellow, because the yellow is the
+ * "press this next" signal and must stay the loudest thing on screen either way.
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e0e0e;
+    --paper-2: #171717;
+    --paper-3: #212121;
+    --ink: #f6f4ee;
+    --ink-soft: #c6c3ba;
+    --ink-mute: #8a8781;
+    --line: #f6f4ee;
+    --line-soft: #333230;
+
+    --blue-soft: #16224a;
+    --red-soft: #3a1a16;
+    --green-soft: #10301f;
+  }
+}

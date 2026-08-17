@@ -1,0 +1,793 @@
+@import url("tokens.css");
+
+/*
+ * The panel is a printed worksheet: a masthead, a ribbon, then four numbered
+ * steps you work down in order. Nothing collapses or hides, because a user who
+ * is mid-bug should never have to hunt for a control — but steps that are not
+ * reachable yet are locked, so the order is visible rather than implied.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  color: var(--ink);
+  background: var(--paper);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+  min-height: 100%;
+  padding: var(--gap-3) var(--gap-3) var(--gap-4);
+}
+
+/* --------------------------------------------------------------- masthead */
+
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--gap-2);
+  padding-bottom: var(--gap-2);
+  border-bottom: var(--border);
+}
+
+/*
+ * Display type is the identity here. It goes as large as a 360px panel allows
+ * and clamps down rather than wrapping into an unreadable stack.
+ */
+.topbar h1 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 1px 0 0;
+  font-size: clamp(19px, 7.4vw, 27px);
+  font-weight: 900;
+  letter-spacing: -0.045em;
+  line-height: 0.92;
+  text-transform: uppercase;
+}
+
+/*
+ * The mark. Drawn from the packaged icon rather than reconstructed in CSS: the
+ * icon is generated from the brand geometry, so this cannot drift away from it,
+ * and it carries its own yellow tile — a CSS disc went invisible against the
+ * dark-mode background.
+ */
+.topbar h1::before {
+  content: "";
+  flex: none;
+  width: 20px;
+  height: 20px;
+  background: url("icons/icon-48.png") center / contain no-repeat;
+}
+
+.eyebrow {
+  color: var(--ink-mute);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 3px 9px 3px 7px;
+  border: var(--border);
+  border-radius: var(--r-pill);
+  background: var(--paper-2);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status.idle {
+  color: var(--ink-mute);
+}
+
+.status.armed {
+  color: var(--always-ink);
+  background: var(--yellow);
+}
+
+/* A recording indicator has one job: be impossible to miss. */
+.status.armed::before {
+  background: var(--red);
+  animation: pulse 1.4s var(--ease) infinite;
+}
+
+.status.error {
+  color: var(--always-paper);
+  background: var(--red);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  55% {
+    opacity: 0.15;
+  }
+}
+
+/* ----------------------------------------------------------------- ribbon */
+
+/*
+ * The tape strip from the brand: a hard black band that separates the masthead
+ * from the work. Purely decorative, so it carries no state and needs no script.
+ */
+.ribbon {
+  display: flex;
+  overflow: hidden;
+  margin: calc(-1 * var(--gap-1)) 0;
+  padding: 5px 0;
+  background: var(--always-ink);
+  transform: rotate(-1.2deg);
+}
+
+.ribbon span {
+  flex: none;
+  padding-right: 14px;
+  color: var(--yellow);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  animation: slide 18s linear infinite;
+}
+
+@keyframes slide {
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status.armed::before,
+  .ribbon span {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------ card */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-2);
+  padding: var(--gap-3);
+  border: var(--border);
+  background: var(--paper);
+  box-shadow: var(--shadow-1);
+}
+
+.hero {
+  gap: var(--gap-2);
+  color: var(--always-ink);
+  background: var(--yellow);
+  box-shadow: var(--shadow-2);
+}
+
+.hero h2 {
+  margin: 0 0 3px;
+  color: var(--always-ink);
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.hero p {
+  margin: 0;
+  color: rgba(10, 10, 10, 0.72);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  word-break: break-word;
+}
+
+/*
+ * Buttons sitting on the yellow block cannot use the theme ink either, or the
+ * arm button turns pale-on-yellow in dark mode. Black on yellow, both themes.
+ */
+.hero button {
+  border-color: var(--always-ink);
+  color: var(--always-ink);
+  background: transparent;
+  box-shadow: 3px 3px 0 var(--always-ink);
+}
+
+.hero button.primary {
+  color: var(--yellow);
+  background: var(--always-ink);
+}
+
+.hero button:not(:disabled):hover {
+  color: var(--yellow);
+  background: var(--always-ink);
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-2);
+  padding-bottom: var(--gap-1);
+  border-bottom: var(--border-hair);
+}
+
+.sectionHeading > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sectionHeading h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: -0.025em;
+  text-transform: uppercase;
+}
+
+/* A hard numbered chip, so the order of the steps is a fact, not a hint. */
+.step {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 21px;
+  height: 21px;
+  border: var(--border);
+  color: var(--paper);
+  background: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.counter {
+  min-width: 24px;
+  padding: 2px 7px;
+  border: var(--border);
+  color: var(--ink);
+  background: var(--green-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.hint {
+  margin: 0;
+  color: var(--ink-mute);
+  font-size: 11px;
+}
+
+.hint b {
+  color: var(--ink);
+}
+
+/*
+ * Steps run in order. A locked card is dimmed rather than hidden so the whole
+ * flow stays visible and it is obvious that the step exists but is not reachable
+ * yet — the controls inside are disabled by the panel script.
+ */
+.card.locked {
+  box-shadow: none;
+  border-style: dashed;
+  opacity: 0.4;
+}
+
+.card.locked .step {
+  color: var(--ink);
+  background: transparent;
+  border-style: dashed;
+}
+
+/*
+ * The single line that always answers "what do I press next". Every confusion
+ * report about this panel was really a missing answer to that question.
+ */
+.nextStep {
+  margin: 0;
+  padding: 8px var(--gap-2);
+  border: var(--border);
+  background: var(--yellow);
+  color: var(--always-ink);
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.nextStep::before {
+  content: "▸ ";
+  font-weight: 900;
+}
+
+.heroHint {
+  margin-top: calc(-1 * var(--gap-2));
+}
+
+.hint kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--line-soft);
+  color: var(--ink);
+  background: var(--paper-2);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+/* --------------------------------------------------------------- buttons */
+
+button {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    transform 0.1s var(--ease),
+    box-shadow 0.1s var(--ease),
+    background 0.14s var(--ease),
+    opacity 0.14s var(--ease);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Press moves the plane onto its own shadow. */
+button:not(:disabled):active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+.primary,
+.secondary,
+.ghost {
+  padding: 10px 14px;
+  border: var(--border);
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: var(--shadow-1);
+}
+
+.primary {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.primary:not(:disabled):hover {
+  color: var(--always-ink);
+  background: var(--yellow);
+}
+
+.secondary {
+  background: var(--paper-2);
+}
+
+.secondary:not(:disabled):hover {
+  background: var(--yellow);
+}
+
+.ghost {
+  box-shadow: none;
+  color: var(--ink-soft);
+  background: transparent;
+}
+
+.ghost:not(:disabled):hover {
+  color: var(--ink);
+  background: var(--paper-2);
+}
+
+.ghost.small {
+  padding: 4px 9px;
+  font-size: 10px;
+}
+
+.danger.ghost {
+  color: var(--red);
+}
+
+.danger.ghost:not(:disabled):hover {
+  color: var(--ink);
+  background: var(--red-soft);
+}
+
+.full {
+  width: 100%;
+}
+
+/* ----------------------------------------------------------------- tools */
+
+.toolGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  border: var(--border);
+}
+
+/*
+ * One shared grid of cells rather than six floating buttons: collapsing the
+ * gaps makes the toolbar read as a single instrument.
+ */
+.tool {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 4px 7px;
+  border: 0;
+  border-right: var(--border-hair);
+  border-bottom: var(--border-hair);
+  box-shadow: none;
+  color: var(--ink-soft);
+  background: var(--paper);
+}
+
+.tool:nth-child(3n) {
+  border-right: 0;
+}
+
+.tool:nth-last-child(-n + 3) {
+  border-bottom: 0;
+}
+
+.tool b {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.tool span {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.tool:not(:disabled):hover {
+  color: var(--ink);
+  background: var(--paper-2);
+}
+
+.tool.active {
+  color: var(--ink);
+  background: var(--blue-soft);
+  box-shadow: inset 0 -3px 0 var(--blue);
+}
+
+/*
+ * Tool colours match the overlay marks they draw, so the panel and the page
+ * agree about what each thing means.
+ */
+.tool[data-tool="region"].active {
+  color: var(--always-ink);
+  background: var(--yellow);
+  box-shadow: inset 0 -3px 0 var(--yellow-deep);
+}
+
+.tool[data-tool="box"].active,
+.tool[data-tool="arrow"].active,
+.tool[data-tool="pen"].active,
+.tool[data-tool="text"].active {
+  background: var(--red-soft);
+  box-shadow: inset 0 -3px 0 var(--red);
+}
+
+/* ---------------------------------------------------------------- fields */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field > span {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+textarea,
+input[type="text"],
+input:not([type]) {
+  width: 100%;
+  padding: 8px 10px;
+  border: var(--border);
+  color: var(--ink);
+  background: var(--paper-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+textarea::placeholder,
+input::placeholder {
+  color: var(--ink-mute);
+}
+
+textarea:focus,
+input:focus {
+  outline: none;
+  background: var(--paper);
+  box-shadow: var(--ring);
+}
+
+.field.compact input {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border: var(--border-hair);
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 1px 0 0;
+  accent-color: var(--ink);
+  flex: none;
+}
+
+.toggle small {
+  display: block;
+  color: var(--ink-mute);
+  font-size: 10px;
+}
+
+/* ---------------------------------------------------------------- frames */
+
+.frames {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-1);
+}
+
+.frames.empty {
+  padding: 18px 12px;
+  border: 2px dashed var(--line-soft);
+  color: var(--ink-mute);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.frame {
+  display: grid;
+  grid-template-columns: 54px 1fr auto;
+  align-items: center;
+  gap: var(--gap-2);
+  padding: 6px;
+  border: var(--border);
+  background: var(--paper);
+}
+
+.frame img {
+  width: 54px;
+  height: 38px;
+  border: var(--border-hair);
+  object-fit: cover;
+  background: var(--paper-3);
+}
+
+.frame strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frame small {
+  color: var(--ink-mute);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.frame button[data-act="remove"] {
+  width: 24px;
+  height: 24px;
+  border: var(--border-hair);
+  box-shadow: none;
+  color: var(--ink-mute);
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.frame button[data-act="remove"]:hover {
+  color: var(--always-paper);
+  background: var(--red);
+}
+
+.frame button[data-act="framing"] {
+  margin-top: 4px;
+  padding: 2px 7px;
+  border: var(--border-hair);
+  box-shadow: none;
+  color: var(--ink-mute);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.4px;
+  line-height: 1.6;
+  text-transform: uppercase;
+}
+
+.frame button[data-act="framing"][aria-pressed="true"] {
+  color: var(--ink);
+  border-color: currentColor;
+}
+
+.frame button[data-act="framing"]:disabled {
+  opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------- review */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--gap-2);
+  border: var(--border-hair);
+  background: var(--paper-2);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.review:empty {
+  display: none;
+}
+
+.review .row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.review .row::before {
+  flex: none;
+  width: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.review .row.ok {
+  color: var(--ink-soft);
+}
+
+.review .row.ok::before {
+  content: "✓";
+  color: var(--green);
+}
+
+.review .row.warn {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.review .row.warn::before {
+  content: "!";
+  color: var(--red);
+}
+
+.review .row.gone {
+  color: var(--ink-mute);
+}
+
+.review .row.gone::before {
+  content: "–";
+}
+
+.review .head {
+  color: var(--ink-mute);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+}
+
+.result {
+  margin: 0;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  word-break: break-word;
+}
+
+.result a {
+  color: var(--ink);
+}
+
+.result code {
+  padding: 1px 5px;
+  color: var(--always-ink);
+  background: var(--yellow);
+}
+
+.exportCard {
+  box-shadow: var(--shadow-2);
+}
+
+footer {
+  margin-top: auto;
+  padding-top: var(--gap-2);
+  border-top: var(--border-hair);
+}
+
+/* Wider panels get one tool row instead of a stretched grid. */
+@media (min-width: 460px) {
+  .toolGrid {
+    grid-template-columns: repeat(6, 1fr);
+  }
+
+  .tool:nth-child(3n) {
+    border-right: var(--border-hair);
+  }
+
+  .tool {
+    border-bottom: 0;
+  }
+
+  .tool:last-child {
+    border-right: 0;
+  }
+}

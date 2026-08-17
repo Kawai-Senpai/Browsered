@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "125",
+  "name": "Context Capsule",
+  "short_name": "Capsule",
+  "description": "Point at the bug, ship the evidence. Bundled with browserd: capture visual, DOM, console and network context from any page.",
+  "version": "0.2.0",
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "permissions": [
+    "scripting",
+    "storage",
+    "sidePanel",
+    "debugger",
+    "downloads",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Context Capsule",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}

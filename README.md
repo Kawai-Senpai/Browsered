@@ -293,6 +293,39 @@ They assert behaviour, not that a call returned:
 
 ---
 
+## The bundled capture panel
+
+Every **headed** browser browserd launches comes with
+[Context Capsule](extensions/context-capsule) already installed — a side panel that
+lets *you* point at the broken thing and package it for an agent: the region you
+drew, the DOM under it, computed CSS, console, network and storage, with
+credential-shaped data redacted.
+
+It complements the MCP surface rather than duplicating it. browserd records
+continuously and answers an agent's questions; the panel is the human half —
+select the component, describe the change, seal the evidence.
+
+The vendored copy has the extension's own native-messaging/MCP export **removed**:
+browserd is already the agent interface, and running two evidence pipelines would
+mean a second host process to install. Capsules are written through
+`chrome.downloads` instead, so nothing extra is required.
+
+```bash
+npm run vendor:extension          # refresh from ../Fe-shot
+npm run vendor:extension -- --source /path/to/Fe-shot
+npm run vendor:extension:check    # fail if the vendored copy is stale
+npm run test:extension            # verify it loads into a real browser
+```
+
+The transform is asserted, not best-effort: if upstream changes shape, the vendor
+step fails loudly instead of silently shipping a half-stripped extension.
+
+Skip it per launch with `bundledExtensions: false`, or globally with
+`AGENTBROWSER_NO_BUNDLED_EXTENSIONS=1`. It is skipped automatically when headless
+(no UI to show) and on branded Chrome/Edge 137+, which cannot sideload at all.
+
+---
+
 ## Where your data lives (and how to clean it)
 
 Everything the daemon records goes to `~/.agent-browser` (override with

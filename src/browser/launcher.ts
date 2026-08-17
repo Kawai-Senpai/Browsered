@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createLogger } from '../util/logger.js';
-import { paths, resolveChromium, type ResolvedBrowser } from '../util/paths.js';
+import { bundledExtensions, paths, resolveChromium, type ResolvedBrowser } from '../util/paths.js';
 
 const log = createLogger('browser:launch');
 
@@ -59,6 +59,8 @@ export interface LaunchOptions {
   headless?: boolean;
   /** Absolute paths to unpacked extension directories. */
   extensions?: string[];
+  /** Load extensions shipped with browserd. Default true for headed launches. */
+  bundledExtensions?: boolean;
   /** Extra Chromium switches, appended verbatim. */
   args?: string[];
   /** Start with these URLs open. */
@@ -153,7 +155,35 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
     args.push(`--window-size=${options.windowSize.width},${options.windowSize.height}`);
   }
 
-  const extensions = (options.extensions ?? []).filter((p) => existsSync(p));
+  /*
+   * Bundled extensions ship inside the package and load by default, so a headed
+   * browser always has the capture panel available without the human wiring
+   * anything up. They are skipped when:
+   *
+   *   - headless, where a side panel has no UI to appear in and the extra
+   *     service worker only adds targets to instrument, or
+   *   - the resolved browser is branded Chrome/Edge 137+, which ignores the
+   *     sideloading flags entirely. Failing the launch over a convenience
+   *     extension would be worse than launching without it, so this is a
+   *     warning rather than the hard error an explicit `extensions` list gets.
+   */
+  const wantBundled =
+    options.bundledExtensions !== false &&
+    process.env.AGENTBROWSER_NO_BUNDLED_EXTENSIONS !== '1' &&
+    !options.headless;
+  let bundled: string[] = [];
+  if (wantBundled) {
+    bundled = bundledExtensions();
+    if (bundled.length && !resolved.supportsExtensionFlags) {
+      log.warn(
+        'branded Chrome/Edge cannot sideload extensions; launching without the bundled capture panel',
+      );
+      bundled = [];
+    }
+  }
+
+  const requested = [...(options.extensions ?? []), ...bundled];
+  const extensions = requested.filter((p) => existsSync(p));
   const missing = (options.extensions ?? []).filter((p) => !existsSync(p));
   if (missing.length) log.warn(`ignoring missing extension paths: ${missing.join(', ')}`);
   if (extensions.length) {

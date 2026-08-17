@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** Root for everything the daemon owns: profiles, database, blobs, logs. */
 export function homeDir(): string {
@@ -23,6 +24,31 @@ export const paths = {
   daemonInfo: () => join(homeDir(), 'run', 'browserd.json'),
   config: () => join(homeDir(), 'config.json'),
 };
+
+/**
+ * Extensions shipped inside the package, loaded into every headed browser
+ * unless disabled.
+ *
+ * Resolved relative to this module rather than cwd, so it works the same when
+ * browserd is launched by an MCP client from an arbitrary directory. Both the
+ * built (`dist/util/`) and source (`src/util/`) layouts sit two levels below
+ * the package root.
+ */
+export function bundledExtensionsDir(): string {
+  return resolve(fileURLToPath(new URL('../../extensions', import.meta.url)));
+}
+
+/** Absolute paths of every bundled extension that is actually present. */
+export function bundledExtensions(): string[] {
+  const root = bundledExtensionsDir();
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(root, entry.name))
+    // A directory without a manifest is not a loadable extension, and passing
+    // one to Chromium aborts the whole launch.
+    .filter((dir) => existsSync(join(dir, 'manifest.json')));
+}
 
 const WINDOWS_CHROME_CANDIDATES = [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',

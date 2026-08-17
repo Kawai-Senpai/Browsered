@@ -25,15 +25,18 @@
     "install-mcp": "node scripts/install-mcp.mjs",
     "start": "node dist/cli.js",
     "test": "npm run build && node tests/mcp-live.mjs && node tests/http-smoke.mjs",
-    "test:all": "npm run build && node tests/mcp-live.mjs && node tests/http-smoke.mjs && node tests/deep-dive.mjs --headless",
+    "test:all": "npm run build && node tests/mcp-live.mjs && node tests/http-smoke.mjs && node tests/extension-check.mjs && node tests/deep-dive.mjs --headless",
     "test:deep": "node tests/deep-dive.mjs --headless",
     "test:deep:headed": "node tests/deep-dive.mjs",
+    "test:extension": "node tests/extension-check.mjs",
     "test:http": "node tests/http-smoke.mjs",
     "test:live": "node tests/mcp-live.mjs",
     "test:live:headed": "node tests/mcp-live.mjs --headed",
     "test:real": "node tests/real-world.mjs",
     "tools": "node dist/cli.js --tools",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "vendor:extension": "node scripts/vendor-extension.mjs",
+    "vendor:extension:check": "node scripts/vendor-extension.mjs --check",
     "verify-mcp": "node scripts/verify-mcp.mjs"
   },
   "dependencies": {
@@ -64,9 +67,10 @@
   ],
   "license": "MIT",
   "files": [
-    "dist",
-    "scripts",
+    "LICENSE",
     "README.md",
-    "LICENSE"
+    "dist",
+    "extensions",
+    "scripts"
   ]
 }

@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1"
+    >
+
+    <title>Context Capsule</title>
+
+    <link
+      rel="stylesheet"
+      href="sidepanel.css"
+    >
+  </head>
+
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">
+            AGENT CONTEXT
+          </div>
+
+          <h1>Context Capsule</h1>
+        </div>
+
+        <span
+          id="statusPill"
+          class="status idle"
+        >
+          Idle
+        </span>
+      </header>
+
+      <div
+        class="ribbon"
+        aria-hidden="true"
+      >
+        <span>
+          Point at the bug — ship the evidence —
+          Point at the bug — ship the evidence —
+        </span>
+
+        <span>
+          Point at the bug — ship the evidence —
+          Point at the bug — ship the evidence —
+        </span>
+      </div>
+
+      <section class="hero card">
+        <div>
+          <h2>
+            Point at the UI.
+            Capture the evidence.
+          </h2>
+
+          <p id="pageText">
+            Open a web page,
+            then arm capture.
+          </p>
+        </div>
+
+        <button
+          id="armButton"
+          class="primary"
+        >
+          Arm capture
+        </button>
+      </section>
+
+      <label class="toggle">
+        <input
+          id="autoArm"
+          type="checkbox"
+          checked
+        >
+
+        <span>
+          Arm automatically
+
+          <small>
+            Starts recording on whichever tab you are looking at,
+            and follows you when you switch tabs or navigate.
+          </small>
+        </span>
+      </label>
+
+      <p class="hint heroHint">
+        Arming only starts recording console and network in the
+        background. <b>Step 3 is what collects the evidence.</b>
+      </p>
+
+      <p id="nextStep" class="nextStep"></p>
+
+      <section
+        class="card"
+        data-requires="armed"
+      >
+        <div class="sectionHeading">
+          <div>
+            <span class="step">1</span>
+            <h3>Select and mark</h3>
+          </div>
+
+          <button
+            id="clearButton"
+            class="ghost small"
+          >
+            Clear
+          </button>
+        </div>
+
+        <div
+          class="toolGrid"
+          id="toolGrid"
+        >
+          <button
+            data-tool="select"
+            class="tool active"
+          >
+            <b>↖</b>
+            <span>Select</span>
+          </button>
+
+          <button
+            data-tool="region"
+            class="tool"
+          >
+            <b>▱</b>
+            <span>Region</span>
+          </button>
+
+          <button
+            data-tool="box"
+            class="tool"
+          >
+            <b>□</b>
+            <span>Box</span>
+          </button>
+
+          <button
+            data-tool="arrow"
+            class="tool"
+          >
+            <b>→</b>
+            <span>Arrow</span>
+          </button>
+
+          <button
+            data-tool="pen"
+            class="tool"
+          >
+            <b>⌁</b>
+            <span>Pen</span>
+          </button>
+
+          <button
+            data-tool="text"
+            class="tool"
+          >
+            <b>T</b>
+            <span>Text</span>
+          </button>
+        </div>
+
+        <p class="hint">
+          <kbd>Shift</kbd> + click adds components.
+          <kbd>↑</kbd> <kbd>↓</kbd> walk parent and child,
+          <kbd>←</kbd> <kbd>→</kbd> walk siblings.
+          <kbd>Esc</kbd> returns to select.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="sectionHeading">
+          <div>
+            <span class="step">2</span>
+            <h3>Describe the change</h3>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>What is wrong?</span>
+
+          <textarea
+            id="actualInput"
+            rows="3"
+            placeholder="The middle pricing card is shorter and the button no longer aligns with the other cards."
+          ></textarea>
+        </label>
+
+        <label class="field">
+          <span>What should happen?</span>
+
+          <textarea
+            id="expectedInput"
+            rows="3"
+            placeholder="All pricing cards should have equal height and aligned buttons at every desktop breakpoint."
+          ></textarea>
+        </label>
+
+        <label class="field compact">
+          <span>Capture label</span>
+
+          <input
+            id="labelInput"
+            value="Desktop view"
+          >
+        </label>
+      </section>
+
+      <section
+        class="card"
+        data-requires="armed"
+      >
+        <div class="sectionHeading">
+          <div>
+            <span class="step">3</span>
+            <h3>Capture the evidence</h3>
+          </div>
+
+          <span
+            id="frameCount"
+            class="counter"
+          >
+            0
+          </span>
+        </div>
+
+        <label class="toggle">
+          <input
+            id="fullSnapshot"
+            type="checkbox"
+          >
+
+          <span>
+            Include full-page DOM snapshot
+
+            <small>
+              Whole-document layout and paint order.
+              Adds megabytes; off by default.
+            </small>
+          </span>
+        </label>
+
+        <label class="toggle">
+          <input
+            id="autoCrop"
+            type="checkbox"
+            checked
+          >
+
+          <span>
+            Crop to what you marked
+
+            <small>
+              Trims the dead space around your selections and
+              annotations, keeping a wide margin. Off ships the
+              whole viewport.
+            </small>
+          </span>
+        </label>
+
+        <button
+          id="captureButton"
+          class="primary full"
+        >
+          Capture evidence now
+        </button>
+
+        <p class="hint">
+          Reads the DOM, styles, console, network and screenshot,
+          copies the image to your clipboard, and works out the
+          export contents below. Each capture adds one frame.
+        </p>
+
+        <div
+          id="frames"
+          class="frames empty"
+        >
+          Nothing captured yet.
+        </div>
+      </section>
+
+      <section
+        class="card exportCard"
+        data-requires="frames"
+      >
+        <div class="sectionHeading">
+          <div>
+            <span class="step">4</span>
+            <h3>Export to your agent</h3>
+          </div>
+        </div>
+
+        <div
+          id="review"
+          class="review"
+        ></div>
+
+        <button
+          id="exportButton"
+          class="primary full"
+        >
+          Save capsule to Downloads
+        </button>
+
+        <button
+          id="downloadButton"
+          class="ghost full"
+        >
+          Download JSON fallback
+        </button>
+
+        <p
+          id="exportResult"
+          class="result"
+        ></p>
+      </section>
+
+      <footer>
+        <button
+          id="stopButton"
+          class="danger ghost full"
+        >
+          Stop and detach debugger
+        </button>
+      </footer>
+    </main>
+
+    <script
+      type="module"
+      src="sidepanel.js"
+    ></script>
+  </body>
+</html>
