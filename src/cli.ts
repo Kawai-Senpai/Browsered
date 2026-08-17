@@ -380,6 +380,19 @@ async function main(): Promise<void> {
   else await runStdio(ctx);
 }
 
+/*
+ * Piping our output into something that exits early - `browserd --tools | head`
+ * is the obvious case - closes stdout underneath us. Node surfaces that as an
+ * unhandled EPIPE and prints a stack trace, which looks like a crash in the
+ * tool rather than the perfectly normal end of a pipeline.
+ */
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') process.exit(0);
+    throw err;
+  });
+}
+
 main().catch((err) => {
   process.stderr.write(`browserd failed to start: ${(err as Error).stack ?? String(err)}\n`);
   process.exit(1);
