@@ -1,0 +1,66 @@
+{
+  "name": "agent-browser",
+  "version": "0.1.0",
+  "description": "browserd: a continuously-recording Chromium daemon with programmable DevTools, exposed to AI over MCP",
+  "type": "module",
+  "bin": {
+    "browserd": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "dev": "tsx src/cli.ts",
+    "install-mcp": "node scripts/install-mcp.mjs",
+    "start": "node dist/cli.js",
+    "test": "npm run build && node tests/mcp-live.mjs && node tests/http-smoke.mjs",
+    "test:all": "npm run build && node tests/mcp-live.mjs && node tests/http-smoke.mjs && node tests/deep-dive.mjs --headless",
+    "test:deep": "node tests/deep-dive.mjs --headless",
+    "test:deep:headed": "node tests/deep-dive.mjs",
+    "test:http": "node tests/http-smoke.mjs",
+    "test:live": "node tests/mcp-live.mjs",
+    "test:live:headed": "node tests/mcp-live.mjs --headed",
+    "test:real": "node tests/real-world.mjs",
+    "tools": "node dist/cli.js --tools",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "^13.0.3",
+    "ws": "^8.21.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.13.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser",
+    "automation",
+    "chrome-devtools-protocol",
+    "cdp",
+    "chromium",
+    "debugging",
+    "network-inspection",
+    "ai-agent",
+    "devtools"
+  ],
+  "license": "MIT",
+  "files": [
+    "dist",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ]
+}

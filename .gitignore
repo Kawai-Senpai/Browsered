@@ -1,0 +1,56 @@
+# Build output
+dist/
+dist-test/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Daemon data: profiles, recordings, blobs, artifacts, logs.
+# Never commit these - browser profiles contain cookies and session tokens,
+# and recorded bodies contain whatever the pages you visited returned.
+.agent-browser/
+data/
+profiles/
+artifacts/
+blobs/
+netlogs/
+traces/
+screenshots/
+*.db
+*.db-wal
+*.db-shm
+*.heapsnapshot
+*.cpuprofile
+*.har
+*.netlog.json
+
+# Local scratch
+probe*.mjs
+p[0-9]*.mjs
+e2e-check.mjs
+scratch/
+tmp/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
