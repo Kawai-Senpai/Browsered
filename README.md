@@ -85,7 +85,176 @@ other way.
 
 ---
 
+---
+
+## For coding agents: install this yourself
+
+Everything needed to go from a clean checkout to a working MCP server, with no
+human in the loop. Run these from the repository root.
+
+### 1. Check prerequisites
+
+```bash
+node --version          # must be >= 20.11
+```
+
+If Node is missing or older, stop and tell the user — do not attempt to install a
+runtime yourself.
+
+Chromium is resolved in this order, and **at least one must exist**:
+
+1. `AGENTBROWSER_CHROMIUM` (an explicit path you set)
+2. Playwright's bundled Chromium
+3. A system Chrome/Chromium/Edge
+
+```bash
+npx playwright install chromium     # the recommended source; ~150MB
+```
+
+Prefer Playwright's build: branded Chrome/Edge 137+ removed `--load-extension`,
+so the bundled capture panel cannot load on those.
+
+### 2. Build
+
+```bash
+npm install
+npm run build           # tsc -> dist/
+```
+
+Verify the build produced a working CLI:
+
+```bash
+node dist/cli.js --tools | head -3     # should print "browserd exposes 174 tools"
+```
+
+### 3. Register with the MCP client
+
+```bash
+node scripts/install-mcp.mjs           # detects and patches every client found
+node scripts/install-mcp.mjs --print   # print the JSON without writing anything
+```
+
+It merges into existing config and writes a `.bak` first, so it will not clobber
+other servers. Supported: Claude Desktop, Claude Code, Codex CLI (TOML), Cursor,
+Windsurf, VS Code.
+
+To write config yourself instead, the stdio entry is:
+
+```json
+{
+  "mcpServers": {
+    "browserd": {
+      "command": "node",
+      "args": ["<ABSOLUTE_PATH>/dist/cli.js"]
+    }
+  }
+}
+```
+
+Use an **absolute** path to `dist/cli.js`. Codex CLI uses TOML instead:
+
+```toml
+[mcp_servers.browserd]
+command = "node"
+args = ["<ABSOLUTE_PATH>/dist/cli.js"]
+```
+
+### 4. Verify before reporting success
+
+```bash
+node scripts/verify-mcp.mjs
+```
+
+This reads each config back, launches exactly what it specifies, and completes a
+real MCP handshake. Every registered client should report `174 tools advertised`.
+If a client is listed as "no config file", it is simply not installed.
+
+Then confirm the browser itself works:
+
+```bash
+node dist/cli.js open --headless --url https://example.com
+```
+
+It should print a `browser_id` within a few seconds. Press Ctrl+C to stop.
+
+**The MCP client must be restarted** before it sees the new server. Say so
+explicitly rather than assuming the tools are live.
+
+### 5. Confirm end to end (optional but recommended)
+
+```bash
+npm run test:discovery      # 9 checks, ~40s: launch, discover, read history
+npm run test:live           # 117 checks, ~2min: the full tool surface
+```
+
+These launch real Chromium. They use a temporary `AGENTBROWSER_HOME`, so they
+never touch real profiles or recordings.
+
+### Calling the tools
+
+The server advertises dotted names (`browser.list`, `network.get_body`). Some
+clients rewrite them — Claude Code exposes `browser.list` as
+`mcp__browserd__browser_list`. Match whatever your client lists; the underlying
+tool is the same.
+
+A first session normally goes:
+
+```
+browser.list                     -> find an already-open browser, or none
+page.navigate    { url }         -> auto-launches one if needed
+page.screenshot                  -> see it
+network.summarize                -> what is slow or failing
+network.get_request { request_id }
+network.get_body    { request_id, as_json: true }
+```
+
+`browser_id` is optional everywhere. Omit it and browserd uses the only running
+browser, or launches one. Pass it when more than one is open — with several
+running, omitting it is an error rather than a guess.
+
+### Things that will bite an agent
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `no browser is running and autoLaunch is disabled` | Call `browser.launch`, or drop `--no-auto-launch`. |
+| `browser_id is required: N browsers are running` | Pass an explicit `browser_id`. |
+| Mutating tool returns `control_denied` | Control mode is `observe` or `paused`. Call `browser.set_control_mode { mode: "shared" }`. |
+| `branded Chrome/Edge ... removed --load-extension` | Run `npx playwright install chromium`, or set `AGENTBROWSER_CHROMIUM`. |
+| Response body is missing | Check `body_state`. `too_large` needs a higher `recorder.maxBodyBytes`; `unavailable` means Chromium evicted it (normal for redirects). |
+| A tool returns an `artifact_id` and truncated text | By design. Read it with `artifact.search`, `artifact.read_lines` or `artifact.json_query` — never expect the whole body inline. |
+| Queries on a closed browser | Supported. Recorded network and console stay queryable by `browser_id`; only live control is refused. |
+
+### Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `AGENTBROWSER_HOME` | Data directory (default `~/.agent-browser`) |
+| `AGENTBROWSER_CHROMIUM` | Explicit Chromium path, overriding detection |
+| `AGENTBROWSER_HEADLESS` | `1` to auto-launch headless |
+| `AGENTBROWSER_NO_BUNDLED_EXTENSIONS` | `1` to skip the capture panel |
+| `AGENTBROWSER_LOG_LEVEL` | `trace` \| `debug` \| `info` \| `warn` \| `error` |
+| `AGENTBROWSER_PORT` | HTTP port for `--http` mode |
+
+### One-shot install
+
+```bash
+node --version
+npx playwright install chromium
+npm install
+npm run build
+node scripts/install-mcp.mjs
+node scripts/verify-mcp.mjs
+```
+
+Then tell the user to restart their MCP client.
+
+---
+
 ## Install
+
+*(Handing this to a coding agent? Point it at
+[For coding agents](#for-coding-agents-install-this-yourself) above — that section
+has the exact commands, verification steps and failure modes.)*
 
 Requires **Node ≥ 20.11**. Chromium is resolved from Playwright's bundled build when
 present (branded Chrome 137+ dropped `--load-extension`; the bundled build still has it),
