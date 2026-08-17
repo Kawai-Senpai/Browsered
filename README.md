@@ -110,10 +110,29 @@ their existing config (writing a `.bak` first), and never clobbers other servers
 
 ```bash
 node scripts/install-mcp.mjs --print            # show the JSON, change nothing
-node scripts/install-mcp.mjs --client cursor    # just one client
+node scripts/install-mcp.mjs --client codex     # just one client
 node scripts/install-mcp.mjs --headless         # auto-launch headless
 node scripts/install-mcp.mjs --http --port 7331 # register the HTTP endpoint instead
 ```
+
+Supported clients: **Claude Desktop**, **Claude Code**, **Codex CLI**, **Cursor**,
+**Windsurf**, **VS Code**. Codex uses `[mcp_servers.browserd]` TOML sections rather than
+JSON; the installer edits that file surgically so comments and your other settings survive.
+
+Then confirm every client can actually launch it:
+
+```bash
+npm run verify-mcp
+```
+
+```
+  OK    Claude Code      174 tools advertised
+  OK    Codex CLI        174 tools advertised
+  OK    VS Code          174 tools advertised
+```
+
+This reads the real config files and completes an MCP handshake with whatever they
+specify, so a stale path or hand-edited entry is caught rather than assumed working.
 
 Or add it by hand:
 

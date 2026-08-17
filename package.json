@@ -28,7 +28,8 @@
     "test:live:headed": "node tests/mcp-live.mjs --headed",
     "test:real": "node tests/real-world.mjs",
     "tools": "node dist/cli.js --tools",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify-mcp": "node scripts/verify-mcp.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

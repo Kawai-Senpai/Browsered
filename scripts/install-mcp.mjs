@@ -65,6 +65,13 @@ const CLIENTS = {
         : join(HOME, '.config', 'Code', 'User', 'mcp.json'),
     key: 'servers',
   },
+  codex: {
+    label: 'Codex CLI',
+    path: join(HOME, '.codex', 'config.toml'),
+    // Codex keeps servers as [mcp_servers.<name>] TOML sections, not JSON.
+    format: 'toml',
+    key: 'mcp_servers',
+  },
 };
 
 const HTTP_PORT = value('port') ?? '7331';
@@ -84,6 +91,60 @@ function serverEntry() {
   };
 }
 
+/** TOML basic string: escape backslashes and quotes. Windows paths need this. */
+function tomlString(value) {
+  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/** Render the browserd entry as a `[mcp_servers.browserd]` section. */
+function tomlSection(key, name, entry) {
+  const lines = [`[${key}.${name}]`];
+  if (entry.url) {
+    lines.push(`url = ${tomlString(entry.url)}`);
+  } else {
+    lines.push(`command = ${tomlString(entry.command)}`);
+    lines.push(`args = [${entry.args.map(tomlString).join(', ')}]`);
+    if (entry.env) {
+      lines.push(`env = { ${Object.entries(entry.env).map(([k, v]) => `${k} = ${tomlString(v)}`).join(', ')} }`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Replace (or append) one table in a TOML file without reformatting the rest.
+ *
+ * A parse-and-rewrite round trip would silently drop comments, ordering and any
+ * syntax the mini-parser does not model, and this file holds the user's real
+ * Codex settings. So the edit is textual and scoped to exactly one section.
+ */
+function upsertTomlSection(source, key, name, entry) {
+  const header = `[${key}.${name}]`;
+  const block = tomlSection(key, name, entry);
+  const lines = source.split(/\r?\n/);
+  const start = lines.findIndex((l) => l.trim() === header);
+
+  if (start === -1) {
+    const trimmed = source.replace(/\s*$/, '');
+    return { text: `${trimmed}\n\n${block}\n`, existed: false };
+  }
+
+  // The section runs until the next table header at any depth.
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\s*\[/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  // Keep trailing blank lines out of the replaced range so spacing survives.
+  let last = end;
+  while (last > start + 1 && lines[last - 1].trim() === '') last--;
+
+  const next = [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(last)];
+  return { text: next.join('\n'), existed: true };
+}
+
 function readJson(path) {
   if (!existsSync(path)) return {};
   const raw = readFileSync(path, 'utf8').trim();
@@ -99,15 +160,23 @@ function install(id) {
   const client = CLIENTS[id];
   if (!client) throw new Error(`Unknown client "${id}". Known: ${Object.keys(CLIENTS).join(', ')}`);
 
-  const config = readJson(client.path);
-  const bucket = (config[client.key] ??= {});
-  const existed = Boolean(bucket[SERVER_NAME]);
-  bucket[SERVER_NAME] = serverEntry();
-
   mkdirSync(dirname(client.path), { recursive: true });
   // Back up before touching a file the user's editor depends on.
   if (existsSync(client.path)) copyFileSync(client.path, `${client.path}.bak`);
-  writeFileSync(client.path, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+
+  let existed;
+  if (client.format === 'toml') {
+    const source = existsSync(client.path) ? readFileSync(client.path, 'utf8') : '';
+    const result = upsertTomlSection(source, client.key, SERVER_NAME, serverEntry());
+    existed = result.existed;
+    writeFileSync(client.path, result.text, 'utf8');
+  } else {
+    const config = readJson(client.path);
+    const bucket = (config[client.key] ??= {});
+    existed = Boolean(bucket[SERVER_NAME]);
+    bucket[SERVER_NAME] = serverEntry();
+    writeFileSync(client.path, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  }
 
   console.log(`  ${existed ? 'updated' : 'added  '} ${client.label}`);
   console.log(`          ${client.path}`);
