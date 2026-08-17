@@ -18,6 +18,7 @@
     "node": ">=20.11"
   },
   "scripts": {
+    "browsers": "node dist/cli.js list",
     "build": "tsc -p tsconfig.json",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "data": "node scripts/clean-data.mjs",
@@ -27,11 +28,13 @@
     "data:reset": "node scripts/clean-data.mjs --all",
     "dev": "tsx src/cli.ts",
     "install-mcp": "node scripts/install-mcp.mjs",
+    "open": "node dist/cli.js open",
     "start": "node dist/cli.js",
     "test": "npm run build && node tests/mcp-live.mjs && node tests/http-smoke.mjs",
-    "test:all": "npm run build && node tests/mcp-live.mjs && node tests/http-smoke.mjs && node tests/extension-check.mjs && node tests/deep-dive.mjs --headless",
+    "test:all": "npm run build && node tests/mcp-live.mjs && node tests/http-smoke.mjs && node tests/extension-check.mjs && node tests/discovery-check.mjs && node tests/deep-dive.mjs --headless",
     "test:deep": "node tests/deep-dive.mjs --headless",
     "test:deep:headed": "node tests/deep-dive.mjs",
+    "test:discovery": "node tests/discovery-check.mjs",
     "test:extension": "node tests/extension-check.mjs",
     "test:http": "node tests/http-smoke.mjs",
     "test:live": "node tests/mcp-live.mjs",
@@ -75,6 +78,7 @@
     "README.md",
     "dist",
     "extensions",
+    "launchers",
     "scripts"
   ]
 }

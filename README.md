@@ -149,6 +149,41 @@ Or add it by hand:
 Restart your client. **No browser needs to be open** — the first tool call that needs
 one launches it.
 
+### Open a browser you drive yourself
+
+This is the workflow browserd is built around. Run:
+
+```bash
+npm run open                     # or: node dist/cli.js open
+node dist/cli.js open --url https://localhost:3000
+```
+
+Windows users can double-click **`launchers/AI Browser.bat`** instead; there is
+an `ai-browser.sh` beside it for macOS and Linux.
+
+A normal Chromium window opens with your persistent profile and the capture
+panel installed. **Use it however you like.** From the moment it starts, network,
+console, exceptions and navigations are being recorded — no agent has to be
+connected, and nothing has to be armed.
+
+```bash
+node dist/cli.js list            # every browser currently running
+```
+
+Hours later, start a fresh MCP session and ask your agent to look. It finds the
+window you already have open, attaches to it, and can read everything that
+happened before it existed:
+
+> The checkout on that tab failed earlier. What went wrong?
+
+It will find the request in the recording, read the payload and the response
+body, pull the console error and stack, and point at the source line — for
+traffic that happened long before the agent connected.
+
+Browsers advertise themselves in `~/.agent-browser/run/browsers/`, so discovery
+works across processes and survives an MCP session ending. Records for browsers
+that have exited are reaped automatically.
+
 ### Try it
 
 Ask your agent:
@@ -169,6 +204,8 @@ function, and hand you the file and line.
 ## Running the daemon directly
 
 ```bash
+node dist/cli.js open            # open a browser that records; discoverable later
+node dist/cli.js list            # show every running browser
 node dist/cli.js                 # MCP over stdio (default)
 node dist/cli.js --http          # Streamable HTTP on 127.0.0.1:7331/mcp
 node dist/cli.js --tools         # print the tool surface and exit
@@ -269,6 +306,7 @@ npm run test:live             # 117 checks: real MCP client, real Chromium, loca
 npm run test:live:headed      # same, with a visible window
 npm run test:deep             # 35 checks against a real public site
 npm run test:extension        # 7 checks: the bundled panel in a real browser
+npm run test:discovery        # 9 checks: cross-process discovery and late attach
 npm run test:http             # Streamable HTTP transport + origin guard
 npm run test:real             # headed narrated walkthrough on live sites
 ```

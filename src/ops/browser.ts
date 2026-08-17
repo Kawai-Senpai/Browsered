@@ -4,6 +4,13 @@ import { AgentBrowserError } from '../util/errors.js';
 import type { OpsContext } from './context.js';
 
 export async function listInstances(ctx: OpsContext): Promise<Record<string, unknown>> {
+  /*
+   * Sweep the discovery registry before answering. This is usually the first
+   * tool an agent calls, and reporting "no browsers" while a window the human
+   * opened is sitting there recording would be the worst possible first
+   * impression - and would push the agent into launching a second one.
+   */
+  await ctx.registry.adoptDiscovered().catch(() => []);
   const running = ctx.registry.list();
   return {
     count: running.length,

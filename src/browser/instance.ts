@@ -189,12 +189,23 @@ export class BrowserInstance {
 
   /** Attach to a Chromium someone else launched. Never killed by the daemon. */
   static async connect(
-    input: { wsEndpoint: string; profile?: string; userDataDir?: string; pid?: number },
+    input: {
+      wsEndpoint: string;
+      profile?: string;
+      userDataDir?: string;
+      pid?: number;
+      /**
+       * Reuse an existing handle when adopting a browser from the discovery
+       * registry. Minting a fresh one would give the same window a different
+       * browser_id in every session, breaking any id an agent wrote down.
+       */
+      browserId?: string;
+    },
     stores: Stores,
     config: DaemonConfig,
   ): Promise<BrowserInstance> {
     const instance = new BrowserInstance({
-      browserId: mintId('br'),
+      browserId: input.browserId ?? mintId('br'),
       profile: input.profile ?? 'external',
       userDataDir: input.userDataDir ?? '',
       wsEndpoint: input.wsEndpoint,
