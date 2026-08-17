@@ -105,8 +105,9 @@ npm run build
 node scripts/install-mcp.mjs
 ```
 
-This detects Claude Desktop, Claude Code, Cursor, Windsurf and VS Code, **merges** into
-their existing config (writing a `.bak` first), and never clobbers other servers.
+This detects Claude Desktop, Claude Code, Codex CLI, Cursor, Windsurf and VS Code,
+**merges** into their existing config (writing a `.bak` first), and never clobbers other
+servers.
 
 ```bash
 node scripts/install-mcp.mjs --print            # show the JSON, change nothing
