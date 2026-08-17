@@ -293,6 +293,46 @@ They assert behaviour, not that a call returned:
 
 ---
 
+## Where your data lives (and how to clean it)
+
+Everything the daemon records goes to `~/.agent-browser` (override with
+`AGENTBROWSER_HOME`):
+
+| Path | Contents | Grows with |
+|---|---|---|
+| `browserd.db` | SQLite: requests, console, exceptions, websockets, navigations, targets | pages visited |
+| `blobs/` | Request/response bodies, content-addressed by sha256 | traffic recorded |
+| `artifacts/` | Screenshots, HARs, traces, heap snapshots, exports | tools called |
+| `profiles/` | Chromium user-data dirs — **cookies and session tokens** | browsers launched |
+| `logs/` | `browserd.log` | uptime |
+
+Bodies and snapshots live outside SQLite, so the database stays small even after
+heavy use. Profiles are usually the largest item by far.
+
+```bash
+npm run data              # report only: sizes, file counts, row counts, oldest recording
+npm run data:clean        # wipe recordings + orphaned blobs, then VACUUM
+npm run data:artifacts    # delete screenshots / HARs / traces / heap snapshots
+npm run data:profiles     # delete browser profiles (logs you out everywhere)
+npm run data:reset        # all of the above
+```
+
+The bare `npm run data` deletes nothing — it prints what is stored so you can decide.
+Destructive runs confirm first (`--yes` to skip), and deleting profiles prints an
+explicit warning because it drops your logged-in sessions.
+
+Keep recent data and drop the rest:
+
+```bash
+node scripts/clean-data.mjs --recordings --older-than 7d --vacuum
+node scripts/clean-data.mjs --artifacts --older-than 24h --yes
+```
+
+Blob deletion is reference-checked: a body is only removed once no surviving row
+still points at it, so trimming by age cannot orphan a request from its payload.
+
+---
+
 ## Layout
 
 ```

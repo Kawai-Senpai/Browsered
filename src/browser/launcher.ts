@@ -22,9 +22,37 @@ const BASE_ARGS = [
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
   '--disable-ipc-flooding-protection',
+  // Keeps Chromium from prompting for a system keyring on Linux/macOS, which
+  // would block a headless or unattended launch forever.
   '--password-store=basic',
   '--use-mock-keychain',
 ];
+
+/**
+ * Extra flags Linux containers need.
+ *
+ * Chromium's setuid sandbox cannot initialise inside most Docker/CI images
+ * (no user namespaces), and `/dev/shm` there is typically 64MB, which makes
+ * renderers crash on real pages. Both are container problems, not Linux
+ * problems, so these are only added when a container is detected: dropping the
+ * sandbox on a normal desktop would be a real security regression.
+ */
+function linuxContainerArgs(): string[] {
+  if (process.platform !== 'linux') return [];
+  const inContainer =
+    existsSync('/.dockerenv') ||
+    process.env.container !== undefined ||
+    (() => {
+      try {
+        return /docker|kubepods|containerd|lxc/.test(readFileSync('/proc/1/cgroup', 'utf8'));
+      } catch {
+        return false;
+      }
+    })();
+  if (!inContainer) return [];
+  log.info('container detected: adding --no-sandbox and --disable-dev-shm-usage');
+  return ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
+}
 
 export interface LaunchOptions {
   profile: string;
@@ -116,7 +144,7 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
   const activePortFile = join(userDataDir, 'DevToolsActivePort');
   if (existsSync(activePortFile)) rmSync(activePortFile, { force: true });
 
-  const args = [...BASE_ARGS];
+  const args = [...BASE_ARGS, ...linuxContainerArgs()];
   args.push('--remote-debugging-port=0');
   args.push(`--user-data-dir=${userDataDir}`);
 

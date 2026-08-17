@@ -16,6 +16,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "data": "node scripts/clean-data.mjs",
+    "data:artifacts": "node scripts/clean-data.mjs --artifacts",
+    "data:clean": "node scripts/clean-data.mjs --recordings --vacuum",
+    "data:profiles": "node scripts/clean-data.mjs --profiles",
+    "data:reset": "node scripts/clean-data.mjs --all",
     "dev": "tsx src/cli.ts",
     "install-mcp": "node scripts/install-mcp.mjs",
     "start": "node dist/cli.js",
