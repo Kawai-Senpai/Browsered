@@ -5,6 +5,8 @@ import {
   type ConsoleFilter,
   type ConsoleRow,
   type ExceptionRow,
+  type StackMode,
+  type ViewOptions,
 } from '../store/console-store.js';
 import { parseSince, resolveBrowserScope, type OpsContext } from './context.js';
 
@@ -20,6 +22,8 @@ export interface ConsoleQueryArgs {
   limit?: number;
   offset?: number;
   order?: 'asc' | 'desc';
+  fields?: string[];
+  stack?: StackMode;
 }
 
 /**
@@ -44,6 +48,9 @@ async function scope(ctx: OpsContext, args: ConsoleQueryArgs): Promise<ConsoleFi
   return filter;
 }
 
+/** Exports are read off disk, so they keep everything the recorder captured. */
+const EXPORT_VIEW: ViewOptions = { stack: 'full', include_args: true };
+
 /** Levels arrive as one value or a list; the store takes one at a time. */
 function levelsOf(level: string | string[] | undefined): string[] {
   if (!level) return [];
@@ -56,6 +63,10 @@ export async function query(
 ): Promise<Record<string, unknown>> {
   const base = await scope(ctx, args);
   const levels = levelsOf(args.level);
+  const view: ViewOptions = {
+    ...(args.fields ? { fields: args.fields } : {}),
+    ...(args.stack ? { stack: args.stack } : {}),
+  };
 
   let rows: ConsoleRow[];
   let total: number;
@@ -82,12 +93,12 @@ export async function query(
     total_matching: total,
     returned: rows.length,
     offset: base.offset ?? 0,
-    entries: rows.map(toConsoleView),
+    entries: rows.map((row) => toConsoleView(row, view)),
   };
 
   if (args.include_exceptions !== false) {
     const exceptions = ctx.stores.console.listExceptions(base);
-    out.exceptions = exceptions.map(toExceptionView);
+    out.exceptions = exceptions.map((row) => toExceptionView(row, view));
     out.exception_count = exceptions.length;
   }
   if (total > rows.length) {
@@ -102,10 +113,14 @@ export async function exceptions(
 ): Promise<Record<string, unknown>> {
   const filter = await scope(ctx, args);
   const rows = ctx.stores.console.listExceptions(filter);
+  const view: ViewOptions = {
+    ...(args.fields ? { fields: args.fields } : {}),
+    ...(args.stack ? { stack: args.stack } : {}),
+  };
   return {
     browser_id: filter.browserId,
     count: rows.length,
-    exceptions: rows.map(toExceptionView),
+    exceptions: rows.map((row) => toExceptionView(row, view)),
   };
 }
 
@@ -142,9 +157,12 @@ export async function exportLogs(
       meta: { entry_count: entries.length, exception_count: exceptionRows.length },
     },
     (write) => {
-      for (const row of entries) write(`${JSON.stringify({ kind: 'console', ...toConsoleView(row) })}\n`);
+      // The export goes to disk, not into context: keep full stacks and args.
+      for (const row of entries) {
+        write(`${JSON.stringify({ kind: 'console', ...toConsoleView(row, EXPORT_VIEW) })}\n`);
+      }
       for (const row of exceptionRows) {
-        write(`${JSON.stringify({ kind: 'exception', ...toExceptionView(row) })}\n`);
+        write(`${JSON.stringify({ kind: 'exception', ...toExceptionView(row, EXPORT_VIEW) })}\n`);
       }
     },
   );

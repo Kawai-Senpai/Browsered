@@ -27,6 +27,14 @@ export interface ResolvedElement {
   backendNodeId: number;
   nodeId: number;
   description: string;
+  /** How many elements the locator matched; >1 means `nth` decided it. */
+  matchedCount?: number;
+  /**
+   * Set when the match is a non-interactive node inside a button/link/input.
+   * Clicking it usually works by bubbling, but it is a latent failure: on a
+   * different layout the same locator lands on something that does nothing.
+   */
+  interactiveAncestor?: string;
 }
 
 const domReady = new WeakMap<CdpSession, boolean>();
@@ -135,7 +143,7 @@ const TEXT_FINDER = `(needle, nth) => {
       if (label.includes(wanted)) out.push(el);
     }
   }
-  return out[nth] || null;
+  return { node: out[nth] || null, count: out.length };
 }`;
 
 /** Pierces open shadow roots, which a bare querySelectorAll would miss. */
@@ -149,14 +157,26 @@ const CSS_FINDER = `(sel, nth) => {
     for (const el of all) if (el.shadowRoot) walk(el.shadowRoot);
   };
   walk(document);
-  return out[nth] || null;
+  return { node: out[nth] || null, count: out.length };
 }`;
 
 const XPATH_FINDER = `(expr, nth) => {
   const it = document.evaluate(expr, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-  return it.snapshotItem(nth) || null;
+  return { node: it.snapshotItem(nth) || null, count: it.snapshotLength };
 }`;
 
+interface FinderResult {
+  objectId: string | null;
+  count: number;
+}
+
+/**
+ * Run a finder and pull out both the chosen node and how many matched.
+ *
+ * The node has to come back by reference (an objectId) while the count is a
+ * plain number, so the wrapper object is kept alive and its `node` property is
+ * fetched separately rather than serialised.
+ */
 async function callFinder(
   instance: BrowserInstance,
   target: ManagedTarget,
@@ -164,14 +184,33 @@ async function callFinder(
   arg: string,
   nth: number,
   frameId?: string,
-): Promise<string | null> {
+): Promise<FinderResult> {
   const expression = `(${fn})(${JSON.stringify(arg)}, ${nth})`;
   const options: EvaluateOptions = { expression, returnByValue: false, awaitPromise: false };
   if (frameId) options.frameId = frameId;
   const { result, exceptionText } = await evaluate(instance, target, options);
   if (exceptionText) throw new AgentBrowserError('locator_failed', exceptionText);
-  if (result.subtype === 'null' || result.type === 'undefined') return null;
-  return result.objectId ?? null;
+  if (!result.objectId) return { objectId: null, count: 0 };
+
+  const wrapperId = result.objectId;
+  try {
+    const countResponse = await target.session.send<{ result: { value?: unknown } }>(
+      'Runtime.callFunctionOn',
+      { objectId: wrapperId, returnByValue: true, functionDeclaration: 'function () { return this.count; }' },
+    );
+    const count = Number(countResponse.result.value ?? 0);
+
+    const nodeResponse = await target.session.send<{ result: RemoteObject }>('Runtime.callFunctionOn', {
+      objectId: wrapperId,
+      returnByValue: false,
+      functionDeclaration: 'function () { return this.node; }',
+    });
+    const node = nodeResponse.result;
+    if (node.subtype === 'null' || node.type === 'undefined') return { objectId: null, count };
+    return { objectId: node.objectId ?? null, count };
+  } finally {
+    await target.session.trySend('Runtime.releaseObject', { objectId: wrapperId });
+  }
 }
 
 export async function resolveElement(
@@ -181,6 +220,7 @@ export async function resolveElement(
 ): Promise<ResolvedElement> {
   const nth = locator.nth ?? 0;
   let objectId: string | null = null;
+  let matchedCount: number | undefined;
 
   if (locator.ref !== undefined || locator.backend_node_id !== undefined) {
     let backendNodeId = locator.backend_node_id;
@@ -200,11 +240,11 @@ export async function resolveElement(
     });
     objectId = resolved.object.objectId ?? null;
   } else if (locator.selector !== undefined) {
-    objectId = await callFinder(instance, target, CSS_FINDER, locator.selector, nth, locator.frame_id);
+    ({ objectId, count: matchedCount } = await callFinder(instance, target, CSS_FINDER, locator.selector, nth, locator.frame_id));
   } else if (locator.xpath !== undefined) {
-    objectId = await callFinder(instance, target, XPATH_FINDER, locator.xpath, nth, locator.frame_id);
+    ({ objectId, count: matchedCount } = await callFinder(instance, target, XPATH_FINDER, locator.xpath, nth, locator.frame_id));
   } else if (locator.text !== undefined) {
-    objectId = await callFinder(instance, target, TEXT_FINDER, locator.text, nth, locator.frame_id);
+    ({ objectId, count: matchedCount } = await callFinder(instance, target, TEXT_FINDER, locator.text, nth, locator.frame_id));
   } else {
     throw new AgentBrowserError(
       'no_locator',
@@ -229,11 +269,39 @@ export async function resolveElement(
     // Some nodes (in detached trees) have no frontend id; backendNodeId still works.
   }
 
+  /*
+   * A text locator often lands on the <span> inside a button. The click still
+   * works by bubbling, so nothing looks wrong until a layout change puts a
+   * non-interactive node in the same place and the click silently does nothing.
+   */
+  let interactiveAncestor: string | undefined;
+  if (locator.text !== undefined || locator.selector !== undefined) {
+    try {
+      const probe = await target.session.send<{ result: { value?: unknown } }>('Runtime.callFunctionOn', {
+        objectId,
+        returnByValue: true,
+        functionDeclaration: `function () {
+          const interactive = 'button, a[href], input, select, textarea, [role=button], [role=link], [onclick], [tabindex]';
+          if (this.matches && this.matches(interactive)) return null;
+          const ancestor = this.closest && this.closest(interactive);
+          if (!ancestor) return null;
+          return ancestor.tagName.toLowerCase() + (ancestor.id ? '#' + ancestor.id : '');
+        }`,
+      });
+      const value = probe.result.value;
+      if (typeof value === 'string' && value) interactiveAncestor = value;
+    } catch {
+      // Advisory only; never fail a resolution over it.
+    }
+  }
+
   return {
     objectId,
     backendNodeId: described.node.backendNodeId,
     nodeId,
     description: describeNode(described.node.nodeName, described.node.attributes),
+    ...(matchedCount === undefined ? {} : { matchedCount }),
+    ...(interactiveAncestor ? { interactiveAncestor } : {}),
   };
 }
 

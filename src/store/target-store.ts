@@ -110,6 +110,21 @@ export class TargetStore {
       .all() as BrowserRow[];
   }
 
+  /**
+   * The last page URL a browser had. This is how a human recognises a past
+   * session in a list; an id and a pair of counts are not memorable.
+   */
+  lastPageUrl(browserId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT url FROM targets
+          WHERE browser_id = ? AND type = 'page' AND url IS NOT NULL AND url != '' AND url != 'about:blank'
+          ORDER BY attached_at DESC LIMIT 1`,
+      )
+      .get(browserId) as { url?: string } | undefined;
+    return row?.url ?? null;
+  }
+
   /** Returns the durable handle for a CDP target, creating one on first sight. */
   upsertTarget(row: {
     browserId: string;

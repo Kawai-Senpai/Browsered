@@ -10,7 +10,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -364,6 +364,218 @@ async function runSuite(tools) {
     const r = await call('page.wait_for', { selector: '#title', timeout_ms: 3000 });
     must(r.found !== false, 'not found');
   });
+
+  /* ------------------------- ergonomics (feedback) ------------------------ */
+  area('ergonomics');
+
+  await check('page.wait_for(any_of) returns whichever condition fired', async () => {
+    const r = await call('page.wait_for', {
+      any_of: [{ selector: '#does-not-exist' }, { selector: '#title' }],
+      timeout_ms: 3000,
+    });
+    must(r.index === 1, `expected the second condition, got index ${r.index}`);
+    must(r.matched === 'selector:#title', `unexpected matched: ${r.matched}`);
+    return `matched ${r.matched} in ${r.waited_ms}ms`;
+  });
+
+  await check('page.wait_for(any_of) beats a hanging condition quickly', async () => {
+    const started = Date.now();
+    await call('page.wait_for', {
+      any_of: [{ selector: '#never-ever' }, { text: 'Fixture Page' }],
+      timeout_ms: 20000,
+    });
+    const ms = Date.now() - started;
+    // The point of any_of: do not sit through the full timeout for a wrong guess.
+    must(ms < 5000, `took ${ms}ms, should have returned as soon as the text matched`);
+    return `${ms}ms instead of 20000ms`;
+  });
+
+  await check('page.wait_for(all_of) waits for every condition', async () => {
+    const r = await call('page.wait_for', {
+      all_of: [{ selector: '#title' }, { text: 'Fixture Page' }],
+      timeout_ms: 3000,
+    });
+    must(Array.isArray(r.matched) && r.matched.length === 2, 'expected both conditions reported');
+  });
+
+  await check('page.wait_for(normalize) matches despite case and spacing', async () => {
+    // Fails without normalize: the DOM says "Fixture Page".
+    const r = await call('page.wait_for', { text: 'fixture   PAGE', normalize: true, timeout_ms: 3000 });
+    must(r.matched, 'normalize did not match');
+  });
+
+  await check('page.wait_for timeout reports the closest text it saw', async () => {
+    try {
+      await call('page.wait_for', { text: 'FIXTURE PAGE', timeout_ms: 900 });
+      throw new Error('should have timed out (exact match is case sensitive)');
+    } catch (err) {
+      if (!err.toolError) throw err;
+      const details = err.payload.details ?? {};
+      const near = JSON.stringify(details.near_miss ?? '');
+      must(near.includes('Fixture Page'), `near_miss did not name the actual text: ${near}`);
+      must(String(details.hint ?? '').includes('normalize'), 'no normalize hint on a text timeout');
+      return 'timeout named the real on-page text';
+    }
+  });
+
+  await check('page.expect asserts and reports observed state', async () => {
+    const pass = await call('page.expect', { selector: '#go', visible: true, enabled: true });
+    must(pass.pass === true, `expected pass, got ${JSON.stringify(pass.failures)}`);
+
+    const fail = await call('page.expect', { selector: '#hidden-box', visible: true });
+    must(fail.pass === false, 'hidden element reported visible');
+    must(fail.failures[0].expectation === 'visible', 'failure not attributed to visible');
+    must(fail.observed.visible === false, 'observed state missing');
+    return 'pass and fail both report observed state';
+  });
+
+  await check('page.observe samples a timeline and finds transitions', async () => {
+    // An earlier area already clicked #go, so reset the label first: without a
+    // known starting value there may be no change left to observe.
+    await call('js.evaluate', { expression: `document.getElementById('out').textContent = 'idle'` });
+    // #out flips from "idle" to "working" to an error when #go is clicked.
+    const observing = call('page.observe', {
+      sample: { out: "document.getElementById('out').textContent" },
+      every_ms: 60,
+      for_ms: 2500,
+    });
+    await call('page.click', { selector: '#go' });
+    const r = await observing;
+    must(r.sample_count > 3, `only ${r.sample_count} samples`);
+    must(r.transitions.length >= 1, 'no transition recorded for a value that changed');
+    const seen = r.transitions.map((t) => t.to);
+    must(seen.some((v) => String(v).startsWith('error')), `never saw the error state: ${JSON.stringify(seen)}`);
+    return `${r.sample_count} samples, ${r.transitions.length} transitions`;
+  });
+
+  await check('page.observe stops early on stop_when', async () => {
+    const r = await call('page.observe', {
+      sample: { title: 'document.title' },
+      every_ms: 50,
+      for_ms: 8000,
+      stop_when: 'true',
+    });
+    must(r.stopped_early === true, 'did not stop early');
+    must(r.duration_ms < 3000, `ran ${r.duration_ms}ms despite stop_when`);
+  });
+
+  await check('page.click warns when text resolves inside a button', async () => {
+    // The fixture button wraps no span, so use a selector that lands on one.
+    await call('js.evaluate', {
+      expression: `document.getElementById('go').innerHTML = '<span id="inner-label">Run</span>'`,
+    });
+    try {
+      const r = await call('page.click', { selector: '#inner-label' });
+      must(String(r.warning ?? '').includes('non-interactive'), `no ambiguity warning: ${JSON.stringify(r)}`);
+      return 'warned about the span inside the button';
+    } finally {
+      // Put the fixture back: later areas click #go and read its label.
+      await call('js.evaluate', { expression: `document.getElementById('go').innerHTML = 'Run'` });
+    }
+  });
+
+  await check('page.screenshot(highlight) boxes an element and cleans up', async () => {
+    const r = await call('page.screenshot', { highlight: '#title', return_image: false, label: 'ergo-run' });
+    must(r.highlighted, 'no highlighted element reported');
+    const listed = await call('artifact.list', { label: 'ergo-run' });
+    must(listed.count >= 1, 'label did not make the artifact findable');
+    return `${r.highlighted}, findable by label`;
+  });
+
+  await check('console.query(fields) trims the payload', async () => {
+    const full = await call('console.query', { limit: 10, stack: 'full' });
+    const lean = await call('console.query', { limit: 10, fields: ['level', 'text', 'at'] });
+    must(lean.entries.length > 0, 'no entries to compare');
+    const keys = Object.keys(lean.entries[0]);
+    must(keys.length === 3, `expected 3 fields, got ${keys.join(',')}`);
+    const fullSize = JSON.stringify(full.entries).length;
+    const leanSize = JSON.stringify(lean.entries).length;
+    must(leanSize < fullSize, `field selection did not shrink payload (${leanSize} vs ${fullSize})`);
+    return `${fullSize} -> ${leanSize} chars`;
+  });
+
+  await check('console.query defaults to one stack frame, not the whole trace', async () => {
+    const top = await call('console.query', { limit: 20 });
+    const none = await call('console.query', { limit: 20, stack: 'none' });
+    must(none.entries.every((e) => e.stack === undefined), 'stack:none still returned stacks');
+    must(JSON.stringify(none.entries).length <= JSON.stringify(top.entries).length, 'stack:none was not smaller');
+  });
+
+  await check('js.evaluate(file) runs a probe from disk', async () => {
+    const probe = join(tmpdir(), `browserd-probe-${Date.now()}.js`);
+    // A quoting-heavy probe: the exact thing that breaks when hand-escaped.
+    writeFileSync(probe, `(() => { const s = "it's \\"quoted\\""; return { ok: true, s }; })()`);
+    try {
+      const r = await call('js.evaluate', { file: probe });
+      must(r.ok === true, `evaluate failed: ${r.error}`);
+      must(r.value.ok === true && r.value.s.includes('quoted'), `unexpected value ${JSON.stringify(r.value)}`);
+      return 'ran a quote-heavy probe with no escaping';
+    } finally {
+      rmSync(probe, { force: true });
+    }
+  });
+
+  await check('js.evaluate warns about a possibly stale dynamic import', async () => {
+    const r = await call('js.evaluate', { expression: `typeof import('/nonexistent.js')` });
+    must(String(r.warning ?? '').includes('cached'), `no stale-module warning: ${JSON.stringify(r).slice(0, 200)}`);
+    const bypassed = await call('js.evaluate', {
+      expression: `typeof import('/nonexistent.js')`,
+      bypass_module_cache: true,
+      await_promise: false,
+    });
+    must(Array.isArray(bypassed.module_cache_bypassed), 'bypass did not report rewritten imports');
+    must(bypassed.warning === undefined, 'still warned after bypassing');
+    return 'warned, and bypass rewrote the import';
+  });
+
+  await check('storage.get/remove accept several keys at once', async () => {
+    await call('storage.set', { kind: 'session', key: 'k1', value: 'v1' });
+    await call('storage.set', { kind: 'session', key: 'k2', value: 'v2' });
+    const got = await call('storage.get', { kind: 'session', keys: ['k1', 'k2', 'missing'] });
+    must(got.found_count === 2, `expected 2 found, got ${got.found_count}`);
+    await call('storage.remove', { kind: 'session', keys: ['k1', 'k2'] });
+    const after = await call('storage.get', { kind: 'session', keys: ['k1', 'k2'] });
+    must(after.found_count === 0, 'keys survived a multi-key remove');
+    return 'read 3 and removed 2 in single calls';
+  });
+
+  await check('storage.snapshot/import round-trips a scenario', async () => {
+    await call('storage.import', {
+      kind: 'session',
+      items: { 'tour_a': 'seen', 'tour_b': 'unseen', 'unrelated': 'x' },
+    });
+    const snap = await call('storage.snapshot', { kind: 'session', prefix: 'tour_' });
+    const items = snap.sessionStorage.items;
+    must(Object.keys(items).length === 2, `prefix filter returned ${Object.keys(items).length} keys`);
+    must(items.tour_a === 'seen', 'value not preserved');
+
+    await call('storage.import', { kind: 'session', items, clear_first: true });
+    const after = await call('storage.snapshot', { kind: 'session' });
+    must(after.sessionStorage.items.unrelated === undefined, 'clear_first did not clear');
+    must(after.sessionStorage.items.tour_a === 'seen', 'restore lost a key');
+
+    // clear_first wiped the fixture's own keys; put back what later areas read.
+    await call('storage.import', { kind: 'session', items: { step: 'checkout' }, clear_first: true });
+    return 'prefix snapshot restored exactly';
+  });
+
+  await check('network.summarize explains a zero-result filter', async () => {
+    const r = await call('network.summarize', { url_contains: 'definitely-not-a-real-host-xyz' });
+    must(r.request_count === 0, 'expected no matches');
+    must(r.recorded_in_scope > 0, 'should report that data exists');
+    must(String(r.explanation).includes('of'), `unhelpful explanation: ${r.explanation}`);
+    must(r.filters_applied.some((f) => f.includes('url_contains')), 'filters not echoed back');
+    return r.explanation;
+  });
+
+  await check('page.list_tabs marks the only tab active', async () => {
+    const r = await call('page.list_tabs');
+    if (r.tabs.length === 1) {
+      must(r.tabs[0].active === true, 'the only tab reported active:false');
+    }
+    return `${r.tabs.length} tab(s)`;
+  });
+
 
   /* -------------------------------- network ------------------------------ */
   area('network recording (the core requirement)');
@@ -1054,6 +1266,19 @@ async function runSuite(tools) {
     const r = await call('page.history', { limit: 20 });
     must(r.navigations.length >= 2, `only ${r.navigations.length} navigations`);
     return `${r.navigations.length} navigations`;
+  });
+  // Destructive: wipes the recordings, so it runs after every other assertion.
+  await check('recording.reset clears console and network together', async () => {
+    const before = await call('console.query', { limit: 5, fields: ['level'] });
+    must(before.total_matching > 0, 'nothing recorded to clear');
+    const r = await call('recording.reset');
+    must(typeof r.console_entries_deleted === 'number', 'console not reset');
+    must(typeof r.requests_deleted === 'number', 'network not reset');
+    const left = await call('console.query', { limit: 5 });
+    must(left.total_matching === 0, `console still has ${left.total_matching} entries`);
+    const net = await call('network.summarize');
+    must(net.request_count === 0, `network still has ${net.request_count} requests`);
+    return `cleared ${r.console_entries_deleted} logs, ${r.requests_deleted} requests`;
   });
   await check('browser.close shuts the browser down', async () => {
     const r = await call('browser.close');

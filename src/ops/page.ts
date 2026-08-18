@@ -12,6 +12,7 @@ import {
   evaluate,
   resolveElement,
   type ElementLocator,
+  type ResolvedElement,
 } from './element.js';
 import { modifiersFromNames, parseChord, resolveKey } from './keys.js';
 
@@ -55,21 +56,37 @@ export async function listTabs(
   };
 }
 
-/** Chromium does not report focus directly; the visible page is the best proxy. */
+/**
+ * Chromium does not report focus directly; the visible page is the best proxy.
+ *
+ * `document.hasFocus()` is false whenever the OS window is not focused, which
+ * is the normal case for an automated browser. Requiring it made every tab
+ * report active:false - including the only tab, which cannot be right - so
+ * visibility decides, and focus only breaks ties between visible pages.
+ */
 async function currentActiveTarget(instance: BrowserInstance): Promise<string | null> {
-  for (const target of instance.targets.listPages()) {
+  const pages = instance.targets.listPages();
+  const visible: string[] = [];
+
+  for (const target of pages) {
     try {
       const { result } = await evaluate(instance, target, {
-        expression: 'document.visibilityState === "visible" && document.hasFocus()',
+        expression: '[document.visibilityState === "visible", document.hasFocus()]',
         returnByValue: true,
         awaitPromise: false,
       });
-      if (result.value === true) return target.handle;
+      const [isVisible, hasFocus] = (result.value ?? []) as [boolean?, boolean?];
+      if (isVisible === true && hasFocus === true) return target.handle;
+      if (isVisible === true) visible.push(target.handle);
     } catch {
       /* target may be navigating */
     }
   }
-  return null;
+
+  if (visible.length > 0) return visible[0]!;
+  // Nothing reported visible (all backgrounded, or every probe failed): with a
+  // single page there is still an unambiguous answer.
+  return pages.length === 1 ? pages[0]!.handle : null;
 }
 
 export async function newTab(
@@ -307,6 +324,8 @@ export async function screenshot(
     quality?: number;
     save_path?: string;
     return_image?: boolean;
+    highlight?: string;
+    label?: string;
   },
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
@@ -330,19 +349,43 @@ export async function screenshot(
     params.captureBeyondViewport = true;
   }
 
-  const { data } = await target.session.send<{ data: string }>(
-    'Page.captureScreenshot',
-    params,
-    60_000,
-  );
+  /*
+   * A one-shot highlight: draw it, capture, then always clear. page.highlight
+   * persists by design, which means a separate cleanup call; for "is the box on
+   * the right control" the overlay should not outlive the screenshot.
+   */
+  let highlighted: string | undefined;
+  if (args.highlight) {
+    const element = await resolveElement(instance, target, { selector: args.highlight });
+    await target.session.trySend('Overlay.enable');
+    await target.session.trySend('DOM.scrollIntoViewIfNeeded', { objectId: element.objectId });
+    await target.session.trySend('Overlay.highlightNode', {
+      highlightConfig: {
+        showInfo: true,
+        contentColor: { r: 111, g: 168, b: 220, a: 0.45 },
+        borderColor: { r: 255, g: 82, b: 82, a: 0.9 },
+      },
+      backendNodeId: element.backendNodeId,
+    });
+    highlighted = element.description;
+  }
+
+  let data: string;
+  try {
+    ({ data } = await target.session.send<{ data: string }>('Page.captureScreenshot', params, 60_000));
+  } finally {
+    if (args.highlight) await target.session.trySend('Overlay.hideHighlight');
+  }
   const buffer = Buffer.from(data, 'base64');
   const mime = format === 'png' ? 'image/png' : format === 'jpeg' ? 'image/jpeg' : 'image/webp';
+  // A caller-supplied label groups a run of screenshots into one investigation,
+  // which is how artifact.list is filtered afterwards.
   const artifact = ctx.stores.artifacts.put('screenshot', buffer, {
     browserId: instance.id,
-    label: `${mode}-${new URL(await currentUrl(instance, target), 'http://x').hostname || 'page'}`,
+    label: args.label ?? `${mode}-${new URL(await currentUrl(instance, target), 'http://x').hostname || 'page'}`,
     mime,
     sourceRef: target.handle,
-    meta: { mode, url: target.info.url },
+    meta: { mode, url: target.info.url, ...(args.label ? { label: args.label } : {}) },
   });
 
   const out: Record<string, unknown> = {
@@ -352,6 +395,7 @@ export async function screenshot(
     size_bytes: buffer.length,
     artifact: toArtifactRef(artifact),
     url: await currentUrl(instance, target),
+    ...(highlighted ? { highlighted } : {}),
   };
   if (args.save_path) {
     out.saved_to = ctx.stores.artifacts.exportTo(artifact.artifact_handle, args.save_path);
@@ -473,6 +517,24 @@ export async function snapshot(ctx: OpsContext, args: SnapshotOptions): Promise<
 
 // ---------------------------------------------------------------- interaction
 
+/**
+ * Locator diagnostics worth echoing on an action: how many elements matched,
+ * and whether the chosen one is a passive node inside something clickable.
+ */
+function locatorNotes(element: ResolvedElement): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (element.matchedCount !== undefined && element.matchedCount > 1) {
+    out.matched_count = element.matchedCount;
+    out.chose = 'first';
+  }
+  if (element.interactiveAncestor) {
+    out.warning =
+      `Resolved to ${element.description}, a non-interactive node inside <${element.interactiveAncestor}>. ` +
+      'The event bubbles so this usually works, but target the interactive ancestor to be safe.';
+  }
+  return out;
+}
+
 export async function click(
   ctx: OpsContext,
   args: PageArgs & {
@@ -510,6 +572,7 @@ export async function click(
       at: { x: Math.round(center.x), y: Math.round(center.y) },
       input: 'touch',
       click_count: clickCount,
+      ...locatorNotes(element),
     };
   }
 
@@ -530,6 +593,7 @@ export async function click(
     input: 'mouse',
     button,
     click_count: clickCount,
+    ...locatorNotes(element),
   };
 }
 
@@ -815,7 +879,11 @@ export async function extractText(
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   const hasLocator =
-    args.selector !== undefined || args.ref !== undefined || args.xpath !== undefined || args.backend_node_id !== undefined;
+    args.selector !== undefined ||
+    args.ref !== undefined ||
+    args.xpath !== undefined ||
+    args.text !== undefined ||
+    args.backend_node_id !== undefined;
 
   let text: string;
   if (hasLocator) {
@@ -865,12 +933,81 @@ export async function extractText(
   return out;
 }
 
+/** One thing to wait for. Bare selector/text on the call is sugar for a single condition. */
+export interface WaitCondition {
+  selector?: string;
+  text?: string;
+  gone?: boolean;
+}
+
+/** Stable label for a condition, echoed back so the caller knows which one fired. */
+function conditionLabel(c: WaitCondition): string {
+  const what = c.selector !== undefined ? `selector:${c.selector}` : `text:${c.text}`;
+  return c.gone ? `${what}:gone` : what;
+}
+
+/**
+ * Build the in-page predicate for one condition.
+ *
+ * `normalize` collapses runs of whitespace and lowercases both haystack and
+ * needle. Without it a wait for "START WITH A PROMPT" fails against a DOM that
+ * renders the same words with different casing or line breaks, and a failed
+ * wait is indistinguishable from a genuinely absent element.
+ */
+function conditionExpression(c: WaitCondition, normalize: boolean): string {
+  if (c.selector !== undefined) {
+    return `!!document.querySelector(${JSON.stringify(c.selector)})`;
+  }
+  const body = `(document.body ? document.body.innerText : '')`;
+  if (!normalize) return `${body}.includes(${JSON.stringify(c.text)})`;
+  const norm = (v: string) => `${v}.replace(/\\s+/g, ' ').trim().toLowerCase()`;
+  return `${norm(body)}.includes(${norm(JSON.stringify(c.text))})`;
+}
+
+/**
+ * On timeout, look for evidence that the caller was close: a relaxed count for
+ * selectors, or the nearest matching line for text. Turning a dead end into a
+ * lead is most of the value of a timeout message.
+ */
+const NEAR_MISS_FN = `(conds) => {
+  const out = [];
+  for (const c of conds) {
+    if (c.selector !== undefined) {
+      const relaxed = String(c.selector).split(/[\\s>+~]+/).filter(Boolean).pop() || c.selector;
+      let count = 0;
+      try { count = document.querySelectorAll(relaxed).length; } catch (e) { count = 0; }
+      out.push({ condition: c.label, relaxed_selector: relaxed, relaxed_match_count: count });
+    } else {
+      const needle = String(c.text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const lines = ((document.body ? document.body.innerText : '') || '').split('\\n')
+        .map((l) => l.replace(/\\s+/g, ' ').trim()).filter(Boolean);
+      let best = null; let bestScore = 0;
+      const words = needle.split(' ').filter(Boolean);
+      for (const line of lines) {
+        const low = line.toLowerCase();
+        let score = 0;
+        for (const w of words) if (low.includes(w)) score++;
+        if (score > bestScore) { bestScore = score; best = line; }
+      }
+      out.push({
+        condition: c.label,
+        closest_text: best ? best.slice(0, 200) : null,
+        matched_words: bestScore + '/' + words.length,
+      });
+    }
+  }
+  return out;
+}`;
+
 export async function waitFor(
   ctx: OpsContext,
   args: PageArgs & {
     selector?: string;
     text?: string;
     gone?: boolean;
+    any_of?: WaitCondition[];
+    all_of?: WaitCondition[];
+    normalize?: boolean;
     timeout_ms?: number;
     poll_ms?: number;
   },
@@ -878,16 +1015,38 @@ export async function waitFor(
   const { instance, target } = await pageOf(ctx, args);
   const timeout = Math.min(args.timeout_ms ?? 10_000, 120_000);
   const poll = Math.max(args.poll_ms ?? 100, 25);
-  const deadline = Date.now() + timeout;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeout;
 
-  if (!args.selector && !args.text) {
-    throw new AgentBrowserError('no_condition', 'Provide selector or text to wait for.');
+  if (args.any_of && args.all_of) {
+    throw new AgentBrowserError('ambiguous_condition', 'Pass any_of or all_of, not both.');
   }
 
-  const expression = args.selector
-    ? `!!document.querySelector(${JSON.stringify(args.selector)})`
-    : `(document.body ? document.body.innerText : '').includes(${JSON.stringify(args.text)})`;
+  const mode: 'any' | 'all' = args.all_of ? 'all' : 'any';
+  const conditions: WaitCondition[] =
+    args.any_of ??
+    args.all_of ??
+    (args.selector !== undefined || args.text !== undefined
+      ? [{ ...(args.selector !== undefined ? { selector: args.selector } : {}), ...(args.text !== undefined ? { text: args.text } : {}), ...(args.gone === true ? { gone: true } : {}) }]
+      : []);
 
+  if (conditions.length === 0) {
+    throw new AgentBrowserError(
+      'no_condition',
+      'Provide selector, text, any_of or all_of to wait for.',
+    );
+  }
+  for (const c of conditions) {
+    if (c.selector === undefined && c.text === undefined) {
+      throw new AgentBrowserError('no_condition', 'Every condition needs a selector or text.');
+    }
+  }
+
+  const normalize = args.normalize === true;
+  // One evaluate per poll regardless of how many conditions there are.
+  const expression = `[${conditions.map((c) => conditionExpression(c, normalize)).join(',')}]`;
+
+  let last: boolean[] = conditions.map(() => false);
   while (Date.now() < deadline) {
     try {
       const { result } = await evaluate(instance, target, {
@@ -895,13 +1054,32 @@ export async function waitFor(
         returnByValue: true,
         awaitPromise: false,
       });
-      const present = result.value === true;
-      if (present !== (args.gone === true)) {
+      const raw = Array.isArray(result.value) ? (result.value as unknown[]) : [];
+      // A "gone" condition is satisfied by the absence of its target.
+      const met = conditions.map((c, i) => (raw[i] === true) !== (c.gone === true));
+      last = met;
+
+      if (mode === 'any') {
+        const index = met.findIndex(Boolean);
+        if (index >= 0) {
+          const condition = conditions[index]!;
+          return {
+            target_id: target.handle,
+            matched: conditionLabel(condition),
+            index,
+            waited_ms: Date.now() - startedAt,
+            mode,
+            ...(conditions.length > 1
+              ? { conditions: conditions.map((c, i) => ({ condition: conditionLabel(c), met: met[i] === true })) }
+              : {}),
+          };
+        }
+      } else if (met.every(Boolean)) {
         return {
           target_id: target.handle,
-          matched: true,
-          waited_ms: timeout - (deadline - Date.now()),
-          condition: args.gone ? 'gone' : 'present',
+          matched: conditions.map(conditionLabel),
+          waited_ms: Date.now() - startedAt,
+          mode,
         };
       }
     } catch {
@@ -909,10 +1087,261 @@ export async function waitFor(
     }
     await delay(poll);
   }
-  throw new TimeoutError(
-    `wait for ${args.selector ? `selector ${args.selector}` : `text "${args.text}"`} to be ${args.gone ? 'gone' : 'present'}`,
-    timeout,
+
+  // Timed out: report which conditions were unmet and what was nearby.
+  let nearMiss: unknown = null;
+  try {
+    const probe = conditions.map((c, i) => ({
+      label: conditionLabel(c),
+      ...(c.selector !== undefined ? { selector: c.selector } : {}),
+      ...(c.text !== undefined ? { text: c.text } : {}),
+      met: last[i] === true,
+    }));
+    const { result } = await evaluate(instance, target, {
+      expression: `(${NEAR_MISS_FN})(${JSON.stringify(probe)})`,
+      returnByValue: true,
+      awaitPromise: false,
+    });
+    nearMiss = result.value ?? null;
+  } catch {
+    // Best effort only; the timeout itself is the real answer.
+  }
+
+  const unmet = conditions.filter((_, i) => last[i] !== true).map(conditionLabel);
+  throw new AgentBrowserError(
+    'timeout',
+    `wait (${mode}_of) timed out after ${timeout}ms; unmet: ${unmet.join(', ')}`,
+    {
+      operation: 'page.wait_for',
+      ms: timeout,
+      mode,
+      unmet,
+      near_miss: nearMiss,
+      ...(normalize ? {} : { hint: 'Text matching is exact. Retry with normalize:true for case- and whitespace-insensitive matching.' }),
+    },
   );
+}
+
+/**
+ * Read the observable state of one element in a single round trip. Written as
+ * a DOM function so every property is sampled at the same instant.
+ */
+const OBSERVE_STATE_FN = `function () {
+  const el = this;
+  const style = getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  const disabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+  const hiddenByStyle = style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0;
+  const visible = !hiddenByStyle && rect.width > 0 && rect.height > 0;
+  const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  return {
+    visible: visible,
+    enabled: !disabled,
+    checked: typeof el.checked === 'boolean' ? el.checked : null,
+    focused: document.activeElement === el,
+    value: typeof el.value === 'string' ? el.value : null,
+    text: text.slice(0, 500),
+    in_viewport: rect.top < innerHeight && rect.bottom > 0 && rect.left < innerWidth && rect.right > 0,
+    box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+  };
+}`;
+
+/**
+ * Assert several things about one element at once, returning pass/fail plus the
+ * state actually observed. Compresses the common evaluate-then-eyeball-the-JSON
+ * loop into one call that reads clearly in a transcript.
+ */
+export async function expect(
+  ctx: OpsContext,
+  args: PageArgs & {
+    visible?: boolean;
+    enabled?: boolean;
+    checked?: boolean;
+    focused?: boolean;
+    in_viewport?: boolean;
+    text_contains?: string;
+    value?: string;
+    timeout_ms?: number;
+    poll_ms?: number;
+  },
+): Promise<Record<string, unknown>> {
+  const { instance, target } = await pageOf(ctx, args);
+  const timeout = Math.min(args.timeout_ms ?? 0, 120_000);
+  const poll = Math.max(args.poll_ms ?? 100, 25);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeout;
+
+  const expectations: Array<[string, unknown]> = [];
+  for (const key of ['visible', 'enabled', 'checked', 'focused', 'in_viewport'] as const) {
+    if (args[key] !== undefined) expectations.push([key, args[key]]);
+  }
+  if (args.text_contains !== undefined) expectations.push(['text_contains', args.text_contains]);
+  if (args.value !== undefined) expectations.push(['value', args.value]);
+  if (expectations.length === 0) {
+    throw new AgentBrowserError('no_expectation', 'Provide at least one expectation, e.g. visible:true.');
+  }
+
+  let state: Record<string, unknown> = {};
+  let failures: Array<Record<string, unknown>> = [];
+  let notFound: string | null = null;
+
+  // With no timeout this runs exactly once; with one it retries until the
+  // expectations hold, so a passing assertion is never a race.
+  for (;;) {
+    notFound = null;
+    try {
+      const element = await resolveElement(instance, target, args);
+      const response = await target.session.send<{ result: { value?: unknown } }>('Runtime.callFunctionOn', {
+        objectId: element.objectId,
+        returnByValue: true,
+        functionDeclaration: OBSERVE_STATE_FN,
+      });
+      state = (response.result.value ?? {}) as Record<string, unknown>;
+
+      failures = [];
+      for (const [key, want] of expectations) {
+        if (key === 'text_contains') {
+          const actual = String(state.text ?? '');
+          if (!actual.includes(String(want))) {
+            failures.push({ expectation: 'text_contains', expected: want, actual });
+          }
+          continue;
+        }
+        const actual = state[key];
+        if (actual !== want) failures.push({ expectation: key, expected: want, actual: actual ?? null });
+      }
+      if (failures.length === 0) break;
+    } catch (err) {
+      if (err instanceof NotFoundError) {
+        notFound = err.message;
+        failures = [{ expectation: 'element_exists', expected: true, actual: false }];
+      } else {
+        throw err;
+      }
+    }
+    if (Date.now() >= deadline) break;
+    await delay(poll);
+  }
+
+  const pass = failures.length === 0;
+  return {
+    target_id: target.handle,
+    pass,
+    ...(notFound ? { error: notFound } : {}),
+    ...(pass ? {} : { failures }),
+    observed: state,
+    checked_expectations: expectations.map(([k]) => k),
+    waited_ms: Date.now() - startedAt,
+  };
+}
+
+/**
+ * Sample predicates on a fixed interval and return the timeline.
+ *
+ * Hand-rolling this as a promise loop inside js.evaluate is both boilerplate
+ * and a place for the measurement harness itself to be buggy; the interesting
+ * signal (how long the UI sat locked, when a step actually appeared) is a
+ * property of the timeline, not of any single reading.
+ */
+export async function observe(
+  ctx: OpsContext,
+  args: PageArgs & {
+    sample: Record<string, string>;
+    every_ms?: number;
+    for_ms?: number;
+    stop_when?: string;
+  },
+): Promise<Record<string, unknown>> {
+  const { instance, target } = await pageOf(ctx, args);
+  const every = Math.max(args.every_ms ?? 250, 25);
+  const duration = Math.min(args.for_ms ?? 10_000, 300_000);
+  const keys = Object.keys(args.sample ?? {});
+  if (keys.length === 0) {
+    throw new AgentBrowserError('no_sample', 'Provide sample as {name: "js expression"} pairs.');
+  }
+
+  /*
+   * Every expression is evaluated in one object literal per tick, so the whole
+   * row shares a timestamp instead of drifting across several round trips.
+   */
+  const rowExpression = `({${keys
+    .map((k) => `${JSON.stringify(k)}: (() => { try { return (${args.sample[k]}); } catch (e) { return '<error: ' + e.message + '>'; } })()`)
+    .join(',')}})`;
+  const stopExpression = args.stop_when
+    ? `(() => { try { return !!(${args.stop_when}); } catch (e) { return false; } })()`
+    : null;
+
+  const startedAt = Date.now();
+  const deadline = startedAt + duration;
+  const samples: Array<Record<string, unknown>> = [];
+  let stopped = false;
+
+  while (Date.now() < deadline) {
+    const t = Date.now() - startedAt;
+    try {
+      const { result } = await evaluate(instance, target, {
+        expression: stopExpression ? `[${rowExpression}, ${stopExpression}]` : rowExpression,
+        returnByValue: true,
+        awaitPromise: false,
+      });
+      if (stopExpression) {
+        const pair = (result.value ?? []) as unknown[];
+        samples.push({ t, ...(pair[0] as Record<string, unknown>) });
+        if (pair[1] === true) {
+          stopped = true;
+          break;
+        }
+      } else {
+        samples.push({ t, ...((result.value ?? {}) as Record<string, unknown>) });
+      }
+    } catch {
+      // Navigation tears down the context; record the gap and keep sampling.
+      samples.push({ t, _unavailable: true });
+    }
+    const drift = every - ((Date.now() - startedAt) % every);
+    await delay(drift > 0 ? drift : every);
+  }
+
+  /* Runs of an unchanged value are the thing worth reading: a stall is a run. */
+  const transitions: Array<Record<string, unknown>> = [];
+  for (const key of keys) {
+    let previous: string | undefined;
+    let since = 0;
+    for (const sample of samples) {
+      // Samples taken while the context was gone say nothing about the value.
+      if (sample._unavailable === true) continue;
+      const encoded = JSON.stringify(sample[key] ?? null);
+      const t = sample.t as number;
+      if (previous === undefined) {
+        previous = encoded;
+        since = t;
+        continue;
+      }
+      if (encoded !== previous) {
+        transitions.push({
+          key,
+          from: JSON.parse(previous),
+          to: sample[key] ?? null,
+          at_ms: t,
+          held_ms: t - since,
+        });
+        previous = encoded;
+        since = t;
+      }
+    }
+  }
+  transitions.sort((a, b) => (a.at_ms as number) - (b.at_ms as number));
+
+  return {
+    target_id: target.handle,
+    sampled: keys,
+    every_ms: every,
+    duration_ms: Date.now() - startedAt,
+    sample_count: samples.length,
+    stopped_early: stopped,
+    transitions,
+    samples,
+  };
 }
 
 // ---------------------------------------------------------------- dialogs + viewport

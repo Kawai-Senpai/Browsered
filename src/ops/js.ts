@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { BrowserInstance } from '../browser/instance.js';
 import type { ManagedTarget } from '../browser/target-manager.js';
 import { toArtifactRef } from '../store/artifact-store.js';
@@ -18,6 +19,30 @@ async function pageOf(ctx: OpsContext, args: JsArgs) {
   return { instance, target };
 }
 
+/** Dynamic imports in an expression, e.g. import('/src/app.js'). */
+const DYNAMIC_IMPORT = /\bimport\s*\(\s*(['"`])([^'"`]+)\1\s*\)/g;
+
+/**
+ * Append a cache-busting query to every dynamic import in the expression.
+ *
+ * The page's module registry is keyed by resolved URL, so `import('/x.js')`
+ * returns whatever was first loaded no matter how many times the file changed
+ * on disk. That makes a probe silently report stale values - the failure mode
+ * is bad data, not an error - so the escape hatch is worth having.
+ */
+function bustModuleCache(expression: string): { expression: string; rewrittenImports: string[] } {
+  const rewrittenImports: string[] = [];
+  const token = `browserd_cb=${Date.now()}`;
+  const rewritten = expression.replace(DYNAMIC_IMPORT, (match, quote: string, spec: string) => {
+    // Bare specifiers ("react") resolve through an import map; a query would break them.
+    if (!/^[./]|^https?:/.test(spec)) return match;
+    rewrittenImports.push(spec);
+    const sep = spec.includes('?') ? '&' : '?';
+    return `import(${quote}${spec}${sep}${token}${quote})`;
+  });
+  return { expression: rewritten, rewrittenImports };
+}
+
 /**
  * Runs an expression exactly as typing it into the DevTools console would,
  * command-line helpers ($, $$, $x, copy) included.
@@ -25,19 +50,45 @@ async function pageOf(ctx: OpsContext, args: JsArgs) {
 export async function evaluateExpression(
   ctx: OpsContext,
   args: JsArgs & {
-    expression: string;
+    expression?: string;
+    file?: string;
     await_promise?: boolean;
     return_by_value?: boolean;
     command_line_api?: boolean;
     timeout_ms?: number;
     max_chars?: number;
+    bypass_module_cache?: boolean;
   },
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   instance.requireControl('js.evaluate');
 
+  /*
+   * Reading the probe from a file avoids hand-escaping a long IIFE into JSON,
+   * where one bad quote silently changes behaviour rather than failing loudly.
+   */
+  let source: string;
+  if (args.file !== undefined) {
+    if (args.expression !== undefined) {
+      throw new AgentBrowserError('ambiguous_source', 'Pass expression or file, not both.');
+    }
+    try {
+      source = readFileSync(args.file, 'utf8');
+    } catch (err) {
+      throw new AgentBrowserError('file_unreadable', `Cannot read ${args.file}: ${(err as Error).message}`);
+    }
+  } else if (args.expression !== undefined) {
+    source = args.expression;
+  } else {
+    throw new AgentBrowserError('no_source', 'Provide expression or file.');
+  }
+
+  const { expression, rewrittenImports } = args.bypass_module_cache
+    ? bustModuleCache(source)
+    : { expression: source, rewrittenImports: [] as string[] };
+
   const options: EvaluateOptions = {
-    expression: args.expression,
+    expression,
     awaitPromise: args.await_promise !== false,
     returnByValue: args.return_by_value !== false,
     includeCommandLineAPI: args.command_line_api !== false,
@@ -83,6 +134,16 @@ export async function evaluateExpression(
     }
   }
 
+  /*
+   * A dynamic import that was not cache-busted may have returned a module the
+   * page loaded long ago. Say so: this reads as a real logic bug otherwise.
+   */
+  const staleRisk =
+    !args.bypass_module_cache && DYNAMIC_IMPORT.test(source)
+      ? 'This expression dynamically imports a module. The page may return a cached copy from an earlier load, so the result can be stale. Re-run with bypass_module_cache:true to force a fresh fetch.'
+      : undefined;
+  DYNAMIC_IMPORT.lastIndex = 0; // the regex is global; reset before the next call
+
   return {
     target_id: target.handle,
     ok: true,
@@ -92,6 +153,8 @@ export async function evaluateExpression(
     rendered,
     truncated,
     ...(artifact ? { artifact } : {}),
+    ...(rewrittenImports.length ? { module_cache_bypassed: rewrittenImports } : {}),
+    ...(staleRisk ? { warning: staleRisk } : {}),
   };
 }
 

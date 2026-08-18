@@ -79,37 +79,64 @@ export async function list(
   };
 }
 
+/** Parse a stored value as JSON, reporting the failure rather than throwing. */
+function withParsed(out: Record<string, unknown>, value: string): Record<string, unknown> {
+  try {
+    out.parsed = JSON.parse(value);
+  } catch (err) {
+    out.parse_error = (err as Error).message;
+  }
+  return out;
+}
+
 export async function get(
   ctx: OpsContext,
-  args: StorageArgs & { kind?: Kind; key: string; as_json?: boolean },
+  args: StorageArgs & { kind?: Kind; key?: string; keys?: string[]; as_json?: boolean },
 ): Promise<Record<string, unknown>> {
   const kind = args.kind ?? 'local';
+  const wanted = args.keys ?? (args.key !== undefined ? [args.key] : []);
+  if (wanted.length === 0) {
+    throw new AgentBrowserError('no_key', 'Provide key or keys.');
+  }
   const { target, storageId, origin } = await storageIdFor(ctx, args, kind);
   const { entries } = await target.session.send<{ entries: string[][] }>('DOMStorage.getDOMStorageItems', {
     storageId,
   });
-  const found = entries.find(([key]) => key === args.key);
-  if (!found) {
-    return { target_id: target.handle, kind, origin, key: args.key, found: false };
+  const byKey = new Map(entries.map(([k = '', v = '']) => [k, v]));
+
+  // Several keys in one round trip: reading three keys used to cost three calls.
+  if (args.keys) {
+    const items = wanted.map((key) => {
+      const value = byKey.get(key);
+      if (value === undefined) return { key, found: false };
+      const item: Record<string, unknown> = { key, found: true, size: value.length, value };
+      return args.as_json ? withParsed(item, value) : item;
+    });
+    return {
+      target_id: target.handle,
+      kind,
+      origin,
+      count: items.length,
+      found_count: items.filter((i) => i.found).length,
+      items,
+    };
   }
-  const value = found[1] ?? '';
+
+  const key = wanted[0]!;
+  const value = byKey.get(key);
+  if (value === undefined) {
+    return { target_id: target.handle, kind, origin, key, found: false };
+  }
   const out: Record<string, unknown> = {
     target_id: target.handle,
     kind,
     origin,
-    key: args.key,
+    key,
     found: true,
     size: value.length,
     value,
   };
-  if (args.as_json) {
-    try {
-      out.parsed = JSON.parse(value);
-    } catch (err) {
-      out.parse_error = (err as Error).message;
-    }
-  }
-  return out;
+  return args.as_json ? withParsed(out, value) : out;
 }
 
 export async function set(
@@ -129,13 +156,22 @@ export async function set(
 
 export async function remove(
   ctx: OpsContext,
-  args: StorageArgs & { kind?: Kind; key: string },
+  args: StorageArgs & { kind?: Kind; key?: string; keys?: string[] },
 ): Promise<Record<string, unknown>> {
   const kind = args.kind ?? 'local';
+  const wanted = args.keys ?? (args.key !== undefined ? [args.key] : []);
+  if (wanted.length === 0) {
+    throw new AgentBrowserError('no_key', 'Provide key or keys.');
+  }
   const { instance, target, storageId, origin } = await storageIdFor(ctx, args, kind);
   instance.requireControl(`storage.${kind}.remove`);
-  await target.session.send('DOMStorage.removeDOMStorageItem', { storageId, key: args.key });
-  return { target_id: target.handle, kind, origin, key: args.key, removed: true };
+  for (const key of wanted) {
+    await target.session.send('DOMStorage.removeDOMStorageItem', { storageId, key });
+  }
+  if (args.keys) {
+    return { target_id: target.handle, kind, origin, removed: wanted, count: wanted.length };
+  }
+  return { target_id: target.handle, kind, origin, key: wanted[0], removed: true };
 }
 
 export async function clear(
@@ -147,6 +183,88 @@ export async function clear(
   instance.requireControl(`storage.${kind}.clear`);
   await target.session.send('DOMStorage.clear', { storageId });
   return { target_id: target.handle, kind, origin, cleared: true };
+}
+
+/**
+ * Inline snapshot of local and session storage, optionally narrowed to a key
+ * prefix. Scenario setup ("user has seen tour A but not B") is app-scoped keys,
+ * which is a prefix filter, not a full dump to an artifact.
+ */
+export async function snapshot(
+  ctx: OpsContext,
+  args: StorageArgs & { kind?: Kind | 'both'; prefix?: string; max_value_chars?: number },
+): Promise<Record<string, unknown>> {
+  const which: Kind[] = args.kind === undefined || args.kind === 'both' ? ['local', 'session'] : [args.kind];
+  const max = Math.min(Math.max(args.max_value_chars ?? 2000, 50), 100_000);
+  const out: Record<string, unknown> = {};
+  let origin = '';
+  let targetHandle = '';
+
+  for (const kind of which) {
+    const { target, storageId, origin: seen } = await storageIdFor(ctx, args, kind);
+    origin = seen;
+    targetHandle = target.handle;
+    const { entries } = await target.session.send<{ entries: string[][] }>('DOMStorage.getDOMStorageItems', {
+      storageId,
+    });
+    const items: Record<string, string> = {};
+    let skipped = 0;
+    for (const [key = '', value = ''] of entries) {
+      if (args.prefix && !key.startsWith(args.prefix)) {
+        skipped++;
+        continue;
+      }
+      items[key] = value.length > max ? `${value.slice(0, max)}… (${value.length} chars)` : value;
+    }
+    out[`${kind}Storage`] = { count: Object.keys(items).length, ...(skipped ? { skipped_by_prefix: skipped } : {}), items };
+  }
+
+  return {
+    target_id: targetHandle,
+    origin,
+    ...(args.prefix ? { prefix: args.prefix } : {}),
+    ...out,
+    hint: 'Feed these items straight back to storage.import to restore this state later.',
+  };
+}
+
+/**
+ * Restore a set of keys in one call, the counterpart to snapshot/export.
+ * `clear_first` makes the resulting state exact rather than a merge.
+ */
+export async function importStorage(
+  ctx: OpsContext,
+  args: StorageArgs & {
+    kind?: Kind;
+    items: Record<string, string>;
+    clear_first?: boolean;
+  },
+): Promise<Record<string, unknown>> {
+  const kind = args.kind ?? 'local';
+  if (!args.items || typeof args.items !== 'object') {
+    throw new AgentBrowserError('no_items', 'Provide items as an object of key/value pairs.');
+  }
+  const { instance, target, storageId, origin } = await storageIdFor(ctx, args, kind);
+  instance.requireControl(`storage.${kind}.import`);
+
+  if (args.clear_first) await target.session.send('DOMStorage.clear', { storageId });
+
+  const keys = Object.keys(args.items);
+  for (const key of keys) {
+    await target.session.send('DOMStorage.setDOMStorageItem', {
+      storageId,
+      key,
+      value: String(args.items[key] ?? ''),
+    });
+  }
+  return {
+    target_id: target.handle,
+    kind,
+    origin,
+    imported: keys.length,
+    keys,
+    cleared_first: args.clear_first === true,
+  };
 }
 
 export async function exportStorage(

@@ -226,6 +226,31 @@ export async function getBody(
  * heaviest. Meant as the first call when the question is "what is wrong with
  * this page" rather than "show me request X".
  */
+/** The filters the caller actually set, echoed back for empty results. */
+function describeFilters(args: NetworkQueryArgs): string[] {
+  const out: string[] = [];
+  const named: Array<[keyof NetworkQueryArgs, string]> = [
+    ['url_contains', 'url_contains'],
+    ['url_regex', 'url_regex'],
+    ['method', 'method'],
+    ['resource_type', 'resource_type'],
+    ['mime_contains', 'mime_contains'],
+    ['status_min', 'status_min'],
+    ['status_max', 'status_max'],
+    ['state', 'state'],
+    ['since', 'since'],
+    ['until', 'until'],
+    ['target_id', 'target_id'],
+  ];
+  for (const [key, label] of named) {
+    const value = args[key];
+    if (value !== undefined && value !== '') out.push(`${label}=${String(value)}`);
+  }
+  if (args.failed_only) out.push('failed_only=true');
+  if (args.has_body !== undefined) out.push(`has_body=${args.has_body}`);
+  return out;
+}
+
 export async function summarize(
   ctx: OpsContext,
   args: NetworkQueryArgs & { group_by?: 'domain' | 'resource_type' | 'status' },
@@ -233,6 +258,28 @@ export async function summarize(
   const filter = await scope(ctx, args);
   // Summaries must see the whole window, not the default page size.
   const rows = ctx.stores.network.list({ ...filter, limit: 5000, offset: 0 });
+
+  /*
+   * "0 requests" is ambiguous between "nothing was recorded" and "your filter
+   * matched nothing", and reading it the wrong way sends you hunting for a
+   * recorder bug that is not there. Say which one it is.
+   */
+  if (rows.length === 0) {
+    const applied = describeFilters(args);
+    const recorded = ctx.stores.network.count({ browserId: filter.browserId });
+    return {
+      browser_id: filter.browserId,
+      request_count: 0,
+      recorded_in_scope: recorded,
+      filters_applied: applied,
+      explanation: applied.length
+        ? `0 of ${recorded} recorded requests matched ${applied.join(', ')}.`
+        : `Nothing has been recorded for this browser yet (${recorded} requests in scope).`,
+      hint: applied.length
+        ? 'The recorder has data; these filters excluded it. Widen or drop a filter, or check the URL the app really calls with network.summarize(group_by:"domain").'
+        : 'Load a page first, or pass a browser_id that has recorded history (browser.list shows them).',
+    };
+  }
 
   const groupBy = args.group_by ?? 'resource_type';
   const keyOf = (row: RequestRow): string => {

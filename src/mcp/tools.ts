@@ -47,6 +47,24 @@ const timeWindow = {
   since: z.union([z.string(), z.number()]).optional().describe('Relative ("5m", "90s") or absolute ISO timestamp.'),
   until: z.union([z.string(), z.number()]).optional().describe('Upper bound of the time window.'),
 };
+/** Response-shaping shared by the console readers, to keep payloads small. */
+const consoleShape = {
+  fields: z
+    .array(z.string())
+    .optional()
+    .describe('Return only these fields, e.g. ["level","text","at"]. Cuts payload dramatically.'),
+  stack: z
+    .enum(['none', 'top', 'full'])
+    .optional()
+    .describe('Stack detail per entry. Default "top" (one frame) for console.query, "full" for console.exceptions.'),
+};
+
+/** One branch of a page.wait_for race. */
+const waitCondition = z.object({
+  selector: z.string().optional(),
+  text: z.string().optional(),
+  gone: z.boolean().optional(),
+});
 const paging = {
   limit: z.number().optional(),
   offset: z.number().optional(),
@@ -63,9 +81,12 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'browser.list',
     description:
-      'List every browser the daemon owns or is attached to, with tab counts and control mode. Start here when unsure what exists.',
-    schema: {},
-    handler: (ctx) => browserOps.listInstances(ctx),
+      'List every browser the daemon owns or is attached to, with tab counts and control mode. Start here when unsure what exists. Closed browsers are listed too (their recordings stay queryable), capped by limit and identifiable by last_url.',
+    schema: {
+      include_historical: z.boolean().optional().describe('Default true. Set false to list only running browsers.'),
+      limit: z.number().optional().describe('Maximum closed browsers to include. Default 10.'),
+    },
+    handler: op(browserOps.listInstances),
     readOnly: true,
   },
   {
@@ -116,6 +137,17 @@ export const TOOLS: ToolDef[] = [
       'Arbitrate human and AI control. observe = read only; shared = both drive; agent = AI owns input; paused = AI frozen. Mutating tools refuse under observe and paused.',
     schema: { ...browserId, mode: z.enum(['observe', 'shared', 'agent', 'paused']) },
     handler: op(browserOps.setControlMode),
+  },
+  {
+    name: 'recording.reset',
+    description:
+      'Clear recorded console and network in one call, starting a fresh window. Use before a repro instead of hand-filtering with since:. Defaults to both; name one to clear only that.',
+    schema: {
+      ...browserId,
+      console: z.boolean().optional(),
+      network: z.boolean().optional(),
+    },
+    handler: op(browserOps.resetRecording),
   },
   {
     name: 'browser.close',
@@ -175,7 +207,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'page.reload',
-    description: 'Reload the page, optionally bypassing the cache.',
+    description:
+      'Reload the page, optionally bypassing the cache. Note: this fires pagehide/beforeunload, so an app that persists state in those handlers will not come back in the same state - page.navigate to the same URL skips them, which matters for repeatable test loops.',
     schema: { ...scope, ignore_cache: z.boolean().optional(), wait_until: z.enum(['load', 'domcontentloaded', 'networkidle', 'none']).optional() },
     handler: op(pageOps.reload),
   },
@@ -210,6 +243,14 @@ export const TOOLS: ToolDef[] = [
       quality: z.number().optional().describe('1-100, for jpeg/webp.'),
       save_path: z.string().optional(),
       return_image: z.boolean().optional().describe('Default true. Set false to store only.'),
+      highlight: z
+        .string()
+        .optional()
+        .describe('CSS selector to box in the image. One-shot: the overlay is cleared after capture, unlike page.highlight.'),
+      label: z
+        .string()
+        .optional()
+        .describe('Tag for this capture, e.g. "onboarding-repro". Filter later with artifact.list(label:).'),
     },
     handler: op(pageOps.screenshot),
     readOnly: true,
@@ -298,23 +339,70 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'page.extract_text',
-    description: 'Readable text of the page or of one element, with layout whitespace collapsed.',
+    description:
+      'Readable text of the page, or of one element when given a locator. Pass selector/ref to read a single panel instead of the whole page.',
     schema: { ...scope, ...locator, max_chars: z.number().optional(), include_hidden: z.boolean().optional() },
     handler: op(pageOps.extractText),
     readOnly: true,
   },
   {
     name: 'page.wait_for',
-    description: 'Wait until an element appears or disappears, or until text shows up.',
+    description:
+      'Wait until an element appears or disappears, or until text shows up. Use any_of to race several outcomes (success UI vs error UI) instead of guessing one and eating a full timeout; all_of waits for every condition. On timeout the error reports which conditions were unmet and the closest thing on the page.',
     schema: {
       ...scope,
       selector: z.string().optional(),
       text: z.string().optional(),
       gone: z.boolean().optional().describe('Wait for absence instead of presence.'),
+      any_of: z
+        .array(waitCondition)
+        .optional()
+        .describe('Return as soon as any one of these is met; the response says which (matched, index).'),
+      all_of: z.array(waitCondition).optional().describe('Return once every one of these is met.'),
+      normalize: z
+        .boolean()
+        .optional()
+        .describe('Case- and whitespace-insensitive text matching. Use when the DOM may differ in casing or line breaks.'),
       timeout_ms: z.number().optional(),
       poll_ms: z.number().optional(),
     },
     handler: op(pageOps.waitFor),
+    readOnly: true,
+  },
+  {
+    name: 'page.expect',
+    description:
+      'Assert the state of one element and get pass/fail plus what was actually observed. Replaces the evaluate-then-eyeball-the-JSON loop. Give timeout_ms to retry until it holds instead of failing on a race.',
+    schema: {
+      ...scope,
+      ...locator,
+      visible: z.boolean().optional(),
+      enabled: z.boolean().optional(),
+      checked: z.boolean().optional(),
+      focused: z.boolean().optional(),
+      in_viewport: z.boolean().optional(),
+      text_contains: z.string().optional(),
+      value: z.string().optional(),
+      timeout_ms: z.number().optional().describe('Retry until the expectations hold. Default 0: check once.'),
+      poll_ms: z.number().optional(),
+    },
+    handler: op(pageOps.expect),
+    readOnly: true,
+  },
+  {
+    name: 'page.observe',
+    description:
+      'Sample expressions on an interval and return the timeline plus the transitions between values. Use to measure how long a UI sat locked or when a step actually appeared, instead of hand-rolling a polling loop in js.evaluate.',
+    schema: {
+      ...scope,
+      sample: z
+        .record(z.string())
+        .describe('Named JS expressions to evaluate each tick, e.g. {"locked": "!!document.querySelector(\'.overlay\')"}.'),
+      every_ms: z.number().optional().describe('Sampling interval. Default 250.'),
+      for_ms: z.number().optional().describe('Total duration. Default 10000.'),
+      stop_when: z.string().optional().describe('JS expression; sampling stops early once it is truthy.'),
+    },
+    handler: op(pageOps.observe),
     readOnly: true,
   },
   {
@@ -460,7 +548,15 @@ export const TOOLS: ToolDef[] = [
       'Run an expression exactly as typing it into the DevTools console would, command-line helpers ($, $$, $x) included. Awaits promises by default.',
     schema: {
       ...scope,
-      expression: z.string(),
+      expression: z.string().optional().describe('The code to run. Omit when using file.'),
+      file: z
+        .string()
+        .optional()
+        .describe('Read the code from this path on the daemon host instead. Use for long probes, where escaping into JSON is error-prone.'),
+      bypass_module_cache: z
+        .boolean()
+        .optional()
+        .describe('Cache-bust dynamic import() calls. Without this the page can return a module it loaded earlier, so a probe silently reports stale values.'),
       frame_id: z.string().optional(),
       await_promise: z.boolean().optional(),
       return_by_value: z.boolean().optional(),
@@ -514,7 +610,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'console.query',
     description:
-      'Console output and uncaught exceptions, recorded continuously and kept across navigations. Filter by level, text, regex and time window rather than dumping everything.',
+      'Console output and uncaught exceptions, recorded continuously and kept across navigations. Filter by level, text, regex and time window rather than dumping everything. Narrow the response with fields (e.g. ["level","text","at"]) and stack:"none" when you only need to see what was logged.',
     schema: {
       ...scope,
       ...timeWindow,
@@ -524,6 +620,7 @@ export const TOOLS: ToolDef[] = [
       search: z.string().optional(),
       regex: z.string().optional(),
       include_exceptions: z.boolean().optional(),
+      ...consoleShape,
     },
     handler: op(consoleOps.query),
     readOnly: true,
@@ -531,7 +628,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'console.exceptions',
     description: 'Uncaught exceptions only, with stack traces.',
-    schema: { ...scope, ...timeWindow, ...paging, search: z.string().optional() },
+    schema: { ...scope, ...timeWindow, ...paging, search: z.string().optional(), ...consoleShape },
     handler: op(consoleOps.exceptions),
     readOnly: true,
   },
@@ -685,8 +782,14 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'storage.get',
-    description: 'Read one storage key in full, optionally parsed as JSON.',
-    schema: { ...scope, kind: z.enum(['local', 'session']).optional(), key: z.string(), as_json: z.boolean().optional() },
+    description: 'Read storage keys in full, optionally parsed as JSON. Pass keys to read several in one round trip.',
+    schema: {
+      ...scope,
+      kind: z.enum(['local', 'session']).optional(),
+      key: z.string().optional().describe('A single key.'),
+      keys: z.array(z.string()).optional().describe('Several keys at once; the response is an items array.'),
+      as_json: z.boolean().optional(),
+    },
     handler: op(storageOps.get),
     readOnly: true,
   },
@@ -698,9 +801,39 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'storage.remove',
-    description: 'Delete one storage key.',
-    schema: { ...scope, kind: z.enum(['local', 'session']).optional(), key: z.string() },
+    description: 'Delete storage keys. Pass keys to clear several in one call.',
+    schema: {
+      ...scope,
+      kind: z.enum(['local', 'session']).optional(),
+      key: z.string().optional(),
+      keys: z.array(z.string()).optional(),
+    },
     handler: op(storageOps.remove),
+  },
+  {
+    name: 'storage.snapshot',
+    description:
+      'Local and session storage inline, optionally narrowed to a key prefix. Use for app-scoped state (feature flags, tour progress); pair with storage.import to restore it.',
+    schema: {
+      ...scope,
+      kind: z.enum(['local', 'session', 'both']).optional().describe('Default both.'),
+      prefix: z.string().optional().describe('Only keys starting with this, e.g. "myapp_".'),
+      max_value_chars: z.number().optional(),
+    },
+    handler: op(storageOps.snapshot),
+    readOnly: true,
+  },
+  {
+    name: 'storage.import',
+    description:
+      'Write many storage keys at once, the counterpart to storage.snapshot/export. Sets up a scenario state in one call.',
+    schema: {
+      ...scope,
+      kind: z.enum(['local', 'session']).optional(),
+      items: z.record(z.string()).describe('Key/value pairs to write.'),
+      clear_first: z.boolean().optional().describe('Clear the store first so the result is exact rather than merged.'),
+    },
+    handler: op(storageOps.importStorage),
   },
   {
     name: 'storage.clear',
@@ -1412,7 +1545,12 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'artifact.list',
     description: 'Stored artifacts: bodies, screenshots, traces, heap snapshots, exports.',
-    schema: { ...browserId, kind: z.string().optional(), limit: z.number().optional() },
+    schema: {
+      ...browserId,
+      kind: z.string().optional(),
+      label: z.string().optional().describe('Substring match on the label, to pull back one investigation\'s captures.'),
+      limit: z.number().optional(),
+    },
     handler: op(artifactOps.list),
     readOnly: true,
   },

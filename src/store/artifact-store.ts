@@ -214,7 +214,7 @@ export class ArtifactStore {
     return row;
   }
 
-  list(filter: { browserId?: string; kind?: string; limit?: number }): ArtifactRow[] {
+  list(filter: { browserId?: string; kind?: string; label?: string; limit?: number }): ArtifactRow[] {
     const where: string[] = [];
     const params: Record<string, unknown> = {};
     if (filter.browserId) {
@@ -224,6 +224,11 @@ export class ArtifactStore {
     if (filter.kind) {
       where.push('kind = @kind');
       params.kind = filter.kind;
+    }
+    // Substring match: labels group a run of captures from one investigation.
+    if (filter.label) {
+      where.push("label LIKE '%' || @label || '%'");
+      params.label = filter.label;
     }
     params.limit = Math.min(Math.max(filter.limit ?? 50, 1), 500);
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';

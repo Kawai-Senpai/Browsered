@@ -10,17 +10,19 @@ export async function stat(
 
 export async function list(
   ctx: OpsContext,
-  args: { browser_id?: string; kind?: string; limit?: number },
+  args: { browser_id?: string; kind?: string; label?: string; limit?: number },
 ): Promise<Record<string, unknown>> {
   const rows = ctx.stores.artifacts.list({
     ...(args.browser_id ? { browserId: args.browser_id } : {}),
     ...(args.kind ? { kind: args.kind } : {}),
+    ...(args.label ? { label: args.label } : {}),
     ...(args.limit === undefined ? {} : { limit: args.limit }),
   });
   return {
     count: rows.length,
     artifacts: rows.map((row) => ({
       ...toArtifactRef(row),
+      label: row.label,
       created_at: new Date(row.created_at).toISOString(),
       source: row.source_ref,
     })),

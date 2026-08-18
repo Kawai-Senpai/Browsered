@@ -72,7 +72,11 @@ try {
       expression: `console.log('deep-dive marker', {a:1}); console.warn('warned'); console.error('errored')`,
     });
     await sleep(400);
-    const c = await call('console.query', { limit: 50 });
+    // `args` duplicates the rendered `text`, so it is opt-in via fields now.
+    const c = await call('console.query', {
+      limit: 50,
+      fields: ['level', 'text', 'args', 'at'],
+    });
     const marker = c.entries.find((e) => String(e.text).includes('deep-dive marker'));
     if (!marker) throw new Error('marker log not recorded');
     if (!marker.args?.length) throw new Error('structured args not captured');

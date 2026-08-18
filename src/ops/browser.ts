@@ -3,7 +3,37 @@ import type { ControlMode } from '../config.js';
 import { AgentBrowserError } from '../util/errors.js';
 import type { OpsContext } from './context.js';
 
-export async function listInstances(ctx: OpsContext): Promise<Record<string, unknown>> {
+/**
+ * Clear the continuous recordings in one call, so a fresh window of console and
+ * network starts now. Clearing them separately left `since:` filters doing this
+ * job by hand.
+ */
+export async function resetRecording(
+  ctx: OpsContext,
+  args: { browser_id?: string; console?: boolean; network?: boolean },
+): Promise<Record<string, unknown>> {
+  const instance = await ctx.registry.resolve(args.browser_id);
+  // Default is both; naming one narrows it to that one.
+  const named = args.console !== undefined || args.network !== undefined;
+  const doConsole = named ? args.console === true : true;
+  const doNetwork = named ? args.network === true : true;
+
+  const out: Record<string, unknown> = { browser_id: instance.id, reset_at: new Date().toISOString() };
+  if (doConsole) {
+    out.console_entries_deleted = ctx.stores.console.clear(instance.id);
+  }
+  if (doNetwork) {
+    const before = ctx.stores.network.count({ browserId: instance.id });
+    ctx.stores.network.deleteForBrowser(instance.id);
+    out.requests_deleted = before;
+  }
+  return out;
+}
+
+export async function listInstances(
+  ctx: OpsContext,
+  args: { include_historical?: boolean; limit?: number } = {},
+): Promise<Record<string, unknown>> {
   /*
    * Sweep the discovery registry before answering. This is usually the first
    * tool an agent calls, and reporting "no browsers" while a window the human
@@ -19,15 +49,20 @@ export async function listInstances(ctx: OpsContext): Promise<Record<string, unk
    * console and artifacts remain queryable; only live control is gone. Hiding
    * them would make yesterday's recording look lost when it is on disk.
    */
-  const historical = ctx.stores.targets
-    .listBrowsers(true)
-    .filter((row) => !liveIds.has(row.browser_id))
-    .slice(0, 25)
+  const historicalLimit = Math.min(Math.max(args.limit ?? 10, 1), 100);
+  const allClosed =
+    args.include_historical === false
+      ? []
+      : ctx.stores.targets.listBrowsers(true).filter((row) => !liveIds.has(row.browser_id));
+
+  const withRecordings = allClosed
     .map((row) => ({
       browser_id: row.browser_id,
       profile: row.profile,
       status: 'closed' as const,
       live: false,
+      // The last URL is what makes a past session recognisable.
+      last_url: ctx.stores.targets.lastPageUrl(row.browser_id),
       launched_at: new Date(row.launched_at).toISOString(),
       recorded: {
         requests: ctx.stores.network.count({ browserId: row.browser_id }),
@@ -35,6 +70,9 @@ export async function listInstances(ctx: OpsContext): Promise<Record<string, unk
       },
     }))
     .filter((row) => row.recorded.requests > 0 || row.recorded.console_entries > 0);
+
+  const historical = withRecordings.slice(0, historicalLimit);
+  const hiddenHistorical = withRecordings.length - historical.length;
   return {
     count: running.length,
     auto_launch: ctx.config.autoLaunch,
@@ -56,7 +94,10 @@ export async function listInstances(ctx: OpsContext): Promise<Record<string, unk
     ...(historical.length
       ? {
           historical_note:
-            'These browsers have closed. Their recorded network and console are still queryable by browser_id; live control is not.',
+            'These browsers have closed. Their recorded network and console are still queryable by browser_id; live control is not.' +
+            (hiddenHistorical > 0
+              ? ` ${hiddenHistorical} older one(s) not shown; raise limit to see them, or pass include_historical:false to hide all.`
+              : ''),
         }
       : {}),
     ...(running.length === 0

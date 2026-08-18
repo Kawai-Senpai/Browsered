@@ -225,25 +225,75 @@ export class ConsoleStore {
   }
 }
 
-export function toConsoleView(row: ConsoleRow): Record<string, unknown> {
-  return {
+/** How much of a stack trace to include. Full traces dominate the payload. */
+export type StackMode = 'none' | 'top' | 'full';
+
+export interface ViewOptions {
+  /** Whitelist of output fields. Omit for the default shape. */
+  fields?: string[];
+  stack?: StackMode;
+  /**
+   * Include the structured `args` array. It is the unrendered form of `text`,
+   * so it roughly doubles the payload and is off unless asked for.
+   */
+  include_args?: boolean;
+}
+
+/** Keep only the requested keys, dropping nulls so absent data costs nothing. */
+function project(view: Record<string, unknown>, fields?: string[]): Record<string, unknown> {
+  if (!fields?.length) return view;
+  const out: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (field in view) out[field] = view[field];
+  }
+  return out;
+}
+
+/**
+ * Trim a stack to the requested depth. `top` keeps the first frame, which is
+ * almost always the one that identifies the call site.
+ */
+function trimStack(stack: unknown, mode: StackMode): unknown {
+  if (mode === 'full') return stack;
+  if (mode === 'none' || stack === null || stack === undefined) return undefined;
+  if (Array.isArray(stack)) return stack.length ? [stack[0]] : undefined;
+  if (typeof stack === 'object') {
+    const frames = (stack as { callFrames?: unknown[] }).callFrames;
+    if (Array.isArray(frames)) return frames.length ? { callFrames: [frames[0]] } : undefined;
+  }
+  if (typeof stack === 'string') return stack.split('\n')[0];
+  return stack;
+}
+
+export function toConsoleView(row: ConsoleRow, options: ViewOptions = {}): Record<string, unknown> {
+  // Default to one frame: full traces on every entry are what makes a console
+  // query cost tens of thousands of characters.
+  const stackMode = options.stack ?? 'top';
+  const view: Record<string, unknown> = {
     log_id: row.log_handle,
     target_id: row.target_handle,
     source: row.source,
     level: row.level,
     text: row.text,
-    args: unj(row.args),
     url: row.url,
     line: row.line_number,
     column: row.column_number,
-    stack: unj(row.stack),
     network_request_id: row.network_request,
     at: new Date(row.ts).toISOString(),
   };
+  const stack = trimStack(unj(row.stack), stackMode);
+  if (stack !== undefined) view.stack = stack;
+  /*
+   * `text` is already the rendered form of `args`, so shipping both roughly
+   * doubles the payload for no gain. args is opt-in via fields.
+   */
+  if (options.include_args || options.fields?.includes('args')) view.args = unj(row.args);
+  return project(view, options.fields);
 }
 
-export function toExceptionView(row: ExceptionRow): Record<string, unknown> {
-  return {
+export function toExceptionView(row: ExceptionRow, options: ViewOptions = {}): Record<string, unknown> {
+  const stackMode = options.stack ?? 'full';
+  const view: Record<string, unknown> = {
     exception_id: row.exception_handle,
     target_id: row.target_handle,
     text: row.text,
@@ -251,7 +301,9 @@ export function toExceptionView(row: ExceptionRow): Record<string, unknown> {
     url: row.url,
     line: row.line_number,
     column: row.column_number,
-    stack: unj(row.stack),
     at: new Date(row.ts).toISOString(),
   };
+  const stack = trimStack(unj(row.stack), stackMode);
+  if (stack !== undefined) view.stack = stack;
+  return project(view, options.fields);
 }
