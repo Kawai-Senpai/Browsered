@@ -16,7 +16,14 @@ const log = createLogger('browser:launch');
 const BASE_ARGS = [
   '--no-first-run',
   '--no-default-browser-check',
-  '--disable-features=Translate,MediaRouter,OptimizationHints',
+  /*
+   * OptimizationHints is deliberately NOT disabled here. Chromium's New Tab
+   * Page depends on it, and `--disable-features=OptimizationHints` segfaults
+   * the browser process the moment chrome://newtab loads - which is every time
+   * a human clicks "+". Reproducible on plain Chromium with this flag alone,
+   * no CDP client attached.
+   */
+  '--disable-features=Translate,MediaRouter',
   // Background tabs otherwise get throttled, which distorts recorded timings.
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',

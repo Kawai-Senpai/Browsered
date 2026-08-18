@@ -261,7 +261,7 @@ present (branded Chrome 137+ dropped `--load-extension`; the bundled build still
 otherwise from a system install.
 
 ```bash
-git clone <your-remote> browserd && cd browserd
+git clone https://github.com/Kawai-Senpai/Browsered.git browserd && cd browserd
 npm install
 npm run build
 ```

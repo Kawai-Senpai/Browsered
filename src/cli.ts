@@ -289,6 +289,14 @@ async function runOpen(ctx: OpsContext, options: CliOptions): Promise<void> {
   });
 
   clearInterval(beat);
+  /*
+   * Collector callbacks are async - onLoadingFinished awaits getResponseBody
+   * before it writes. When the browser goes away those promises are still
+   * pending, so closing the database immediately both loses the tail of the
+   * recording and makes every late write throw. Yield first and let them land.
+   * The store-level isOpen guards cover anything still outstanding after this.
+   */
+  await new Promise<void>((resolve) => setTimeout(resolve, 250));
   stores.close();
 }
 
@@ -369,6 +377,8 @@ async function main(): Promise<void> {
     } catch (err) {
       log.warn('failed to close browsers cleanly', err);
     }
+    // Let in-flight collector callbacks settle before the handle goes away.
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
     stores.close();
     process.exit(0);
   };

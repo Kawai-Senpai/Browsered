@@ -1,6 +1,6 @@
 import type { ControlMode } from '../config.js';
 import { mintId } from '../util/ids.js';
-import { j, type Db } from './db.js';
+import { isOpen, j, type Db } from './db.js';
 
 export interface TargetRow {
   target_handle: string;
@@ -89,6 +89,7 @@ export class TargetStore {
   }
 
   patchBrowser(browserId: string, columns: Record<string, unknown>): void {
+    if (!isOpen(this.db)) return;
     const keys = Object.keys(columns);
     if (keys.length === 0) return;
     const assignments = keys.map((k) => `${k} = @${k}`).join(', ');
@@ -139,6 +140,7 @@ export class TargetStore {
     parentHandle?: string | null;
     attachedAt: number;
   }): string {
+    if (!isOpen(this.db)) return mintId('tgt');
     const existing = this.findTargetByCdpId(row.browserId, row.cdpTargetId);
     if (existing) {
       this.db
@@ -200,6 +202,7 @@ export class TargetStore {
   }
 
   patchTarget(handle: string, columns: Record<string, unknown>): void {
+    if (!isOpen(this.db)) return;
     const keys = Object.keys(columns);
     if (keys.length === 0) return;
     const assignments = keys.map((k) => `${k} = @${k}`).join(', ');
@@ -209,6 +212,7 @@ export class TargetStore {
   }
 
   markDetached(handle: string, ts: number): void {
+    if (!isOpen(this.db)) return;
     this.db
       .prepare(`UPDATE targets SET detached_at = ?, session_id = NULL WHERE target_handle = ?`)
       .run(ts, handle);
@@ -230,6 +234,7 @@ export class TargetStore {
     ts: number;
   }): string {
     const handle = mintId('nav');
+    if (!isOpen(this.db)) return handle;
     this.db
       .prepare(
         `INSERT INTO navigations (nav_handle, browser_id, target_handle, frame_id, url, kind, ts)

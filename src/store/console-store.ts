@@ -1,5 +1,5 @@
 import { mintId } from '../util/ids.js';
-import { j, unj, type Db } from './db.js';
+import { isOpen, j, unj, type Db } from './db.js';
 
 export interface ConsoleRow {
   log_handle: string;
@@ -67,6 +67,7 @@ export class ConsoleStore {
     ts: number;
   }): string {
     const handle = mintId('log');
+    if (!isOpen(this.db)) return handle;
     this.db
       .prepare(
         `INSERT INTO console_entries (
@@ -107,6 +108,7 @@ export class ConsoleStore {
     ts: number;
   }): string {
     const handle = mintId('exc');
+    if (!isOpen(this.db)) return handle;
     this.db
       .prepare(
         `INSERT INTO exceptions (

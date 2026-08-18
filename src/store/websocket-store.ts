@@ -1,5 +1,5 @@
 import { mintId } from '../util/ids.js';
-import { j, unj, type Db } from './db.js';
+import { isOpen, j, unj, type Db } from './db.js';
 
 export interface WebSocketRow {
   ws_handle: string;
@@ -40,6 +40,7 @@ export class WebSocketStore {
     createdAt: number;
   }): string {
     const handle = mintId('ws');
+    if (!isOpen(this.db)) return handle;
     this.db
       .prepare(
         `INSERT INTO websockets (ws_handle, browser_id, target_handle, cdp_request_id, url, initiator, created_at)
@@ -71,6 +72,7 @@ export class WebSocketStore {
   }
 
   patch(handle: string, columns: Record<string, unknown>): void {
+    if (!isOpen(this.db)) return;
     const keys = Object.keys(columns);
     if (keys.length === 0) return;
     const assignments = keys.map((k) => `${k} = @${k}`).join(', ');
@@ -90,6 +92,7 @@ export class WebSocketStore {
     ts: number;
   }): string {
     const handle = mintId('wsm');
+    if (!isOpen(this.db)) return handle;
     this.db
       .prepare(
         `INSERT INTO ws_messages (message_handle, ws_handle, browser_id, direction, opcode, payload, payload_size, truncated, ts)

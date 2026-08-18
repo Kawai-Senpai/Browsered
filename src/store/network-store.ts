@@ -1,5 +1,5 @@
 import { mintId } from '../util/ids.js';
-import { b, j, unj, type Db } from './db.js';
+import { b, isOpen, j, unj, type Db } from './db.js';
 
 export type BodyState = 'pending' | 'stored' | 'empty' | 'skipped' | 'too_large' | 'unavailable';
 export type RequestState = 'pending' | 'response' | 'finished' | 'failed';
@@ -101,6 +101,7 @@ export class NetworkStore {
 
   create(input: CreateRequestInput): string {
     const handle = mintId('req');
+    if (!isOpen(this.db)) return handle;
     this.db
       .prepare(
         `INSERT INTO requests (
@@ -148,6 +149,8 @@ export class NetworkStore {
   }
 
   get(handle: string): RequestRow | undefined {
+    // Read from a collector callback (SSE), so it can outlive the handle too.
+    if (!isOpen(this.db)) return undefined;
     return this.db.prepare(`SELECT * FROM requests WHERE request_handle = ?`).get(handle) as
       | RequestRow
       | undefined;
@@ -155,6 +158,7 @@ export class NetworkStore {
 
   /** Generic column patch, keyed by handle. Column names are internal, never caller-supplied. */
   patch(handle: string, columns: Record<string, unknown>): void {
+    if (!isOpen(this.db)) return;
     const keys = Object.keys(columns);
     if (keys.length === 0) return;
     const assignments = keys.map((k) => `${k} = @${k}`).join(', ');

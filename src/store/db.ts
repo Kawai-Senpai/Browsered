@@ -237,6 +237,17 @@ export function unj<T>(value: unknown): T | null {
   }
 }
 
+/*
+ * Recording is event-driven and asynchronous: a CDP callback can resolve after
+ * shutdown has already closed the handle. Those late writes have nowhere to go,
+ * and better-sqlite3 throws on a closed connection, which on an unawaited
+ * callback means an unhandled rejection that kills the process. Dropping them
+ * is the correct outcome - the run is over - so recorders check this first.
+ */
+export function isOpen(db: Db): boolean {
+  return db.open;
+}
+
 /** SQLite has no boolean type; normalize on the way out. */
 export function b(value: unknown): boolean {
   return value === 1 || value === true;
