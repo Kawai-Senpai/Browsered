@@ -120,6 +120,22 @@ export class ConsoleCollector {
     });
   }
 
+  /**
+   * Turn the CDP request id on a log entry into the handle the network tools
+   * take. "Failed to load resource: net::ERR_CONNECTION_REFUSED" is useless
+   * without knowing which resource; with a request_id, console and network are
+   * one queryable graph instead of two lists to join by timestamp.
+   */
+  private requestHandleFor(cdpRequestId: string | undefined): string | null {
+    if (!cdpRequestId) return null;
+    try {
+      const row = this.stores.network.findByCdpId(this.browserId, cdpRequestId, 0);
+      return row?.request_handle ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private onLogEntry(target: ManagedTarget, event: LogEntryAddedEvent): void {
     const entry = event.entry;
     const stack = flattenStack(entry.stackTrace);
@@ -134,7 +150,7 @@ export class ConsoleCollector {
       lineNumber: entry.lineNumber === undefined ? null : entry.lineNumber + 1,
       columnNumber: null,
       stack: stack.length ? stack : null,
-      networkRequest: entry.networkRequestId ?? null,
+      networkRequest: this.requestHandleFor(entry.networkRequestId),
       ts: Math.round(entry.timestamp) || Date.now(),
     });
   }

@@ -8,6 +8,7 @@ import {
 import { toWebSocketView, toWsMessageView } from '../store/websocket-store.js';
 import { AgentBrowserError, NotFoundError } from '../util/errors.js';
 import { parseSince, resolveBrowserScope, type OpsContext } from './context.js';
+import { evaluate } from './element.js';
 
 export interface NetworkQueryArgs {
   browser_id?: string;
@@ -22,6 +23,10 @@ export interface NetworkQueryArgs {
   state?: 'pending' | 'response' | 'finished' | 'failed';
   has_body?: boolean;
   failed_only?: boolean;
+  /** Drop these hosts from the result, e.g. ["analytics.google.com"]. */
+  exclude_domains?: string[];
+  /** Include requests the browser abandoned (net::ERR_ABORTED). Default false. */
+  include_aborted?: boolean;
   since?: string | number;
   until?: string | number;
   limit?: number;
@@ -62,20 +67,127 @@ async function scope(ctx: OpsContext, args: NetworkQueryArgs): Promise<RequestFi
 
 export async function listRequests(
   ctx: OpsContext,
-  args: NetworkQueryArgs,
+  args: NetworkQueryArgs & { fields?: string[] },
 ): Promise<Record<string, unknown>> {
   const filter = await scope(ctx, args);
-  const rows = ctx.stores.network.list(filter);
+  const all = ctx.stores.network.list(filter);
   const total = ctx.stores.network.count(filter);
-  return {
+
+  const excluded = (args.exclude_domains ?? []).map((d) => d.toLowerCase());
+  const rows = all.filter((row) => {
+    if (excluded.length && excluded.some((d) => hostOf(row.url).toLowerCase().includes(d))) return false;
+    if (args.include_aborted !== true && args.failed_only && isBenignAbort(row)) return false;
+    return true;
+  });
+
+  /*
+   * Every entry carries around twenty fields, so fifteen results can eat a
+   * large slice of context. The same escape hatch console.query has: name the
+   * fields you actually need.
+   */
+  const project = (view: Record<string, unknown>): Record<string, unknown> => {
+    if (!args.fields?.length) return view;
+    const out: Record<string, unknown> = {};
+    for (const field of args.fields) if (field in view) out[field] = view[field];
+    return out;
+  };
+
+  const out: Record<string, unknown> = {
     browser_id: filter.browserId,
     total_matching: total,
     returned: rows.length,
     offset: filter.offset ?? 0,
-    requests: rows.map(toRequestView),
+    requests: rows.map((row) => project(toRequestView(row) as unknown as Record<string, unknown>)),
     hint:
       'Bodies and full headers are not in this list. Call network.get_request(request_id) for one, '
-      + 'network.get_body(request_id) for its payload.',
+      + 'network.get_body(request_id) for its payload. Pass fields:["url","status","started_at"] to slim this down.',
+  };
+
+  if (rows.length === 0) {
+    const applied = describeFilters(args);
+    const recorded = ctx.stores.network.count({ browserId: filter.browserId });
+    out.explanation = applied.length
+      ? `0 of ${recorded} recorded requests matched ${applied.join(', ')}.`
+      : `Nothing has been recorded for this browser yet (${recorded} requests in scope).`;
+    out.hint = applied.length
+      ? 'The recorder has data; these filters excluded it. Widen or drop a filter, or check the URL the app really calls with network.summarize(group_by:"domain").'
+      : 'Load a page first, or pass a browser_id that has recorded history (browser.list shows them).';
+  }
+  return out;
+}
+
+/**
+ * Issue a request from inside the page and report what the page sees.
+ *
+ * curl from the shell answers a different question: it bypasses CORS, service
+ * workers, proxies and the page origin. When the question is "can this app
+ * reach its API", it has to be asked from the app.
+ */
+export async function probe(
+  ctx: OpsContext,
+  args: {
+    browser_id?: string;
+    target_id?: string;
+    url: string;
+    method?: string;
+    timeout_ms?: number;
+    headers?: Record<string, string>;
+  },
+): Promise<Record<string, unknown>> {
+  const instance = await ctx.registry.resolve(args.browser_id);
+  const target = await instance.resolvePageOrOpen(args.target_id);
+  const timeout = Math.min(Math.max(args.timeout_ms ?? 10_000, 500), 60_000);
+  const method = (args.method ?? 'GET').toUpperCase();
+
+  const expression = `(async () => {
+    const started = performance.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ${timeout});
+    try {
+      const response = await fetch(${JSON.stringify(args.url)}, {
+        method: ${JSON.stringify(method)},
+        headers: ${JSON.stringify(args.headers ?? {})},
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      return {
+        reachable: true,
+        status: response.status,
+        status_text: response.statusText,
+        type: response.type,
+        redirected: response.redirected,
+        duration_ms: Math.round(performance.now() - started),
+      };
+    } catch (error) {
+      return {
+        reachable: false,
+        error: String(error && error.message ? error.message : error),
+        aborted: controller.signal.aborted,
+        duration_ms: Math.round(performance.now() - started),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  })()`;
+
+  const { result } = await evaluate(instance, target, {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  });
+  const probeResult = (result.value ?? {}) as Record<string, unknown>;
+
+  return {
+    browser_id: instance.id,
+    target_id: target.handle,
+    url: args.url,
+    method,
+    from_origin: target.info.url,
+    ...probeResult,
+    hint:
+      probeResult.reachable === true
+        ? 'This is what the page sees, CORS and service workers included.'
+        : 'A failure here can mean unreachable, blocked by CORS, or intercepted by a service worker or a fault rule (fault.list). network.summarize(group_by:"error") separates them.',
   };
 }
 
@@ -251,13 +363,95 @@ function describeFilters(args: NetworkQueryArgs): string[] {
   return out;
 }
 
+/**
+ * A request the browser abandoned because the page moved on. A 204 beacon
+ * cancelled at navigation is benign and happens on every SPA route change, but
+ * counted as a failure it buries the one connection that really was refused.
+ */
+function isBenignAbort(row: RequestRow): boolean {
+  return (row.error_text ?? '').includes('ERR_ABORTED');
+}
+
+/** Hosts whose failures are almost never the bug being investigated. */
+const TELEMETRY_HOSTS = [
+  'analytics.google.com',
+  'google-analytics.com',
+  'googletagmanager.com',
+  'doubleclick.net',
+  'facebook.com',
+  'facebook.net',
+  'cloudflareinsights.com',
+  'hotjar.com',
+  'mixpanel.com',
+  'amplitude.com',
+  'segment.io',
+  'segment.com',
+  'clarity.ms',
+  'bat.bing.com',
+  'plausible.io',
+  'posthog.com',
+];
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '(unparseable)';
+  }
+}
+
+function isTelemetry(url: string): boolean {
+  const host = hostOf(url);
+  return TELEMETRY_HOSTS.some((known) => host === known || host.endsWith(`.${known}`));
+}
+
+/**
+ * Analytics URLs run to 800 characters of query string. In the tool whose whole
+ * job is to be the cheap overview, ten of those is several thousand characters
+ * of zero signal, so the parameters are counted rather than printed. The full
+ * URL is one network.get_request away.
+ */
+function shortUrl(url: string, limit = 160): string {
+  try {
+    const parsed = new URL(url);
+    const params = [...parsed.searchParams.keys()].length;
+    const base = `${parsed.origin}${parsed.pathname}`;
+    const suffix = params > 0 ? `?<${params} params>` : '';
+    return base.length + suffix.length <= limit ? `${base}${suffix}` : `${base.slice(0, limit)}...${suffix}`;
+  } catch {
+    return url.length > limit ? `${url.slice(0, limit)}...` : url;
+  }
+}
+
+/** The failure classification that is usually the whole diagnosis. */
+function errorKey(row: RequestRow): string | null {
+  if (row.error_text) return row.error_text;
+  if (row.blocked_reason) return `blocked:${row.blocked_reason}`;
+  if (row.status !== null && row.status >= 400) return `http_${row.status}`;
+  return null;
+}
+
 export async function summarize(
   ctx: OpsContext,
-  args: NetworkQueryArgs & { group_by?: 'domain' | 'resource_type' | 'status' },
+  args: NetworkQueryArgs & { group_by?: 'domain' | 'resource_type' | 'status' | 'error'; sort?: 'duration' | 'time' },
 ): Promise<Record<string, unknown>> {
   const filter = await scope(ctx, args);
   // Summaries must see the whole window, not the default page size.
-  const rows = ctx.stores.network.list({ ...filter, limit: 5000, offset: 0 });
+  const all = ctx.stores.network.list({ ...filter, limit: 5000, offset: 0 });
+
+  const excluded = (args.exclude_domains ?? []).map((d) => d.toLowerCase());
+  const dropped = { by_domain: 0, aborted: 0 };
+  const rows = all.filter((row) => {
+    if (excluded.length && excluded.some((d) => hostOf(row.url).toLowerCase().includes(d))) {
+      dropped.by_domain++;
+      return false;
+    }
+    if (args.include_aborted !== true && isBenignAbort(row)) {
+      dropped.aborted++;
+      return false;
+    }
+    return true;
+  });
 
   /*
    * "0 requests" is ambiguous between "nothing was recorded" and "your filter
@@ -267,17 +461,37 @@ export async function summarize(
   if (rows.length === 0) {
     const applied = describeFilters(args);
     const recorded = ctx.stores.network.count({ browserId: filter.browserId });
+    /*
+     * exclude_domains and the aborted filter run after the store query, so they
+     * can empty a result the filters alone did not. Saying "0 of N matched" and
+     * omitting that is how a caller concludes the recorder is broken.
+     */
+    const post: string[] = [];
+    if (dropped.by_domain) post.push(`exclude_domains removed ${dropped.by_domain}`);
+    if (dropped.aborted) post.push(`${dropped.aborted} aborted request(s) were not counted`);
     return {
       browser_id: filter.browserId,
       request_count: 0,
       recorded_in_scope: recorded,
       filters_applied: applied,
-      explanation: applied.length
-        ? `0 of ${recorded} recorded requests matched ${applied.join(', ')}.`
-        : `Nothing has been recorded for this browser yet (${recorded} requests in scope).`,
-      hint: applied.length
-        ? 'The recorder has data; these filters excluded it. Widen or drop a filter, or check the URL the app really calls with network.summarize(group_by:"domain").'
-        : 'Load a page first, or pass a browser_id that has recorded history (browser.list shows them).',
+      ...(dropped.by_domain || dropped.aborted
+        ? {
+            excluded: {
+              ...(dropped.by_domain ? { by_domain: dropped.by_domain } : {}),
+              ...(dropped.aborted ? { aborted: dropped.aborted } : {}),
+            },
+          }
+        : {}),
+      explanation:
+        (applied.length
+          ? `0 of ${recorded} recorded requests matched ${applied.join(', ')}`
+          : `${all.length} of ${recorded} recorded requests were in scope`)
+        + (post.length ? `, and then ${post.join(' and ')}.` : '.'),
+      hint: post.length
+        ? 'Everything in scope was filtered out after the query. Drop exclude_domains, or pass include_aborted:true, to see it.'
+        : applied.length
+          ? 'The recorder has data; these filters excluded it. Widen or drop a filter, or check the URL the app really calls with network.summarize(group_by:"domain").'
+          : 'Load a page first, or pass a browser_id that has recorded history (browser.list shows them).',
     };
   }
 
@@ -291,17 +505,21 @@ export async function summarize(
       }
     }
     if (groupBy === 'status') return row.status === null ? (row.error_text ? 'failed' : 'pending') : String(row.status);
+    if (groupBy === 'error') return errorKey(row) ?? 'ok';
     return row.resource_type ?? 'Other';
   };
 
-  const groups = new Map<string, { count: number; bytes: number; totalMs: number; timed: number; failed: number }>();
+  const groups = new Map<
+    string,
+    { count: number; bytes: number; totalMs: number; timed: number; failed: number; errors: Map<string, number> }
+  >();
   const slowest: RequestRow[] = [];
   const failures: RequestRow[] = [];
   let totalBytes = 0;
 
   for (const row of rows) {
     const key = keyOf(row);
-    const bucket = groups.get(key) ?? { count: 0, bytes: 0, totalMs: 0, timed: 0, failed: 0 };
+    const bucket = groups.get(key) ?? { count: 0, bytes: 0, totalMs: 0, timed: 0, failed: 0, errors: new Map<string, number>() };
     bucket.count++;
     bucket.bytes += row.encoded_data_length ?? 0;
     totalBytes += row.encoded_data_length ?? 0;
@@ -311,23 +529,50 @@ export async function summarize(
     }
     if (row.error_text || (row.status !== null && row.status >= 400)) {
       bucket.failed++;
+      const reason = errorKey(row);
+      if (reason) bucket.errors.set(reason, (bucket.errors.get(reason) ?? 0) + 1);
       if (failures.length < 25) failures.push(row);
     }
     groups.set(key, bucket);
     slowest.push(row);
   }
 
-  slowest.sort((a, b) => {
-    const da = a.completed_at === null ? -1 : a.completed_at - a.started_at;
-    const db = b.completed_at === null ? -1 : b.completed_at - b.started_at;
-    return db - da;
-  });
+  if (args.sort === 'time') {
+    slowest.sort((a, b) => b.started_at - a.started_at);
+  } else {
+    slowest.sort((a, b) => {
+      const da = a.completed_at === null ? -1 : a.completed_at - a.started_at;
+      const db = b.completed_at === null ? -1 : b.completed_at - b.started_at;
+      return db - da;
+    });
+  }
+
+  /*
+   * Telemetry failures are counted, not enumerated. Nobody investigating a
+   * broken page needs ten beacon URLs; they need to know the beacons were noise
+   * so the one real failure stands out.
+   */
+  const telemetryFailures = failures.filter((row) => isTelemetry(row.url));
+  const realFailures = failures.filter((row) => !isTelemetry(row.url));
 
   return {
     browser_id: filter.browserId,
     request_count: rows.length,
     total_transferred_bytes: totalBytes,
     grouped_by: groupBy,
+    ...(dropped.by_domain || dropped.aborted
+      ? {
+          excluded: {
+            ...(dropped.by_domain ? { by_domain: dropped.by_domain } : {}),
+            ...(dropped.aborted
+              ? {
+                  aborted: dropped.aborted,
+                  note: 'Requests the browser abandoned at navigation (net::ERR_ABORTED). Pass include_aborted:true to count them.',
+                }
+              : {}),
+          },
+        }
+      : {}),
     groups: [...groups.entries()]
       .map(([key, v]) => ({
         key,
@@ -335,25 +580,40 @@ export async function summarize(
         transferred_bytes: v.bytes,
         avg_duration_ms: v.timed ? Math.round(v.totalMs / v.timed) : null,
         failed: v.failed,
+        // The breakdown is the diagnosis: refused means nothing is listening,
+        // timed out means it is listening and wedged, and they need different
+        // answers given to the user.
+        ...(v.errors.size ? { error_breakdown: Object.fromEntries([...v.errors.entries()].sort((a, b) => b[1] - a[1])) } : {}),
       }))
       .sort((a, b) => b.count - a.count),
     slowest: slowest.slice(0, 10).map((r) => ({
       request_id: r.request_handle,
-      url: r.url,
+      url: shortUrl(r.url),
       method: r.method,
       status: r.status,
+      started_at: new Date(r.started_at).toISOString(),
       duration_ms: r.completed_at === null ? null : r.completed_at - r.started_at,
       transferred_bytes: r.encoded_data_length,
     })),
-    failures: failures.map((r) => ({
+    failures: realFailures.map((r) => ({
       request_id: r.request_handle,
-      url: r.url,
+      url: shortUrl(r.url),
       method: r.method,
       status: r.status,
+      started_at: new Date(r.started_at).toISOString(),
       error: r.error_text,
       blocked_reason: r.blocked_reason,
     })),
-    hint: 'Drill into any request_id with network.get_request or network.get_body.',
+    ...(telemetryFailures.length
+      ? {
+          third_party_telemetry: {
+            failed: telemetryFailures.length,
+            hosts: [...new Set(telemetryFailures.map((r) => hostOf(r.url)))],
+            note: 'Analytics and beacon endpoints, rolled up rather than listed. Pass exclude_domains to drop them from the counts too.',
+          },
+        }
+      : {}),
+    hint: 'Drill into any request_id with network.get_request or network.get_body. Full URLs are on the detail call; they are shortened here.',
   };
 }
 

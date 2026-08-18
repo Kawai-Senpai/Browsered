@@ -26,6 +26,8 @@ export interface FaultRule {
   /** Only intercept these CDP resource types (Document, XHR, Fetch, ...). */
   resourceTypes?: string[];
   matched: number;
+  /** First few URLs this rule actually fired on, so a mis-scoped glob is visible. */
+  matchedUrls?: string[];
   createdAt: number;
 }
 

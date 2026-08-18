@@ -59,6 +59,16 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'artifact.search / artifact.read_lines / artifact.json_query rather than being ' +
         'pulled into context whole. Narrow console.query with fields and stack; the ' +
         'defaults still carry more than most questions need.\n\n' +
+        'Reading one value is almost always cheaper than a screenshot: ' +
+        'page.extract_text(selector:) on the element you care about costs a few hundred ' +
+        'characters and is exact, where a capture is tens of kilobytes and has to be ' +
+        'judged by eye. Add visible_only:true on marketing pages, whose first screenful ' +
+        'of text is usually an invisible SEO block.\n\n' +
+        'Check where you are before you debug what you see. browser.status lists every ' +
+        'page target with its committed URL, title, load state and HTTP status; ' +
+        'page.navigate returns the same. A title belonging to a different app is the ' +
+        'cheapest way to catch a dev-server port collision between sibling projects, ' +
+        'and it is the failure that otherwise costs a whole session.\n\n' +
         'Driving a flow: page.snapshot to see what is on screen and get refs, then ' +
         'page.click(ref) -> page.wait_for -> page.expect. Prefer refs over text ' +
         'locators: text can resolve to a span inside the button. When an action has ' +
@@ -66,6 +76,15 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'guessing one and eating a full timeout. page.expect asserts and reports the ' +
         'state it saw; page.observe samples over time when the question is "how long ' +
         'was it stuck".\n\n' +
+        'page.click reports observed_change: whether the DOM actually reacted. ' +
+        '"Input was dispatched" and "the app handled it" are different facts, and ' +
+        'retry_if_unchanged:true falls back to the element own .click() when a ' +
+        'synthetic event does not reach a framework handler. Before injecting a fault, ' +
+        'dry-run the glob with fault.test - `**` spans the host, so an API pattern ' +
+        'routinely takes out the frontend route too. network.probe asks "can this app ' +
+        'reach its API" from inside the page, which curl cannot: it sees CORS, service ' +
+        'workers and the page origin. page.audit_layout measures responsive breakage ' +
+        'across widths instead of leaving it to a screenshot.\n\n' +
         'Two traps worth knowing. js.evaluate runs in the page, so a dynamic import() ' +
         'can return a module cached from an earlier load and silently report stale ' +
         'values - pass bypass_module_cache:true. And page.reload fires pagehide ' +

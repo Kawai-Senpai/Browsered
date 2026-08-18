@@ -1,4 +1,7 @@
 import { ROOT_SESSION } from '../cdp/connection.js';
+import type { BrowserInstance } from '../browser/instance.js';
+import type { ManagedTarget } from '../browser/target-manager.js';
+import { evaluate } from './element.js';
 import type { ControlMode } from '../config.js';
 import { AgentBrowserError } from '../util/errors.js';
 import type { OpsContext } from './context.js';
@@ -50,10 +53,7 @@ export async function listInstances(
    * them would make yesterday's recording look lost when it is on disk.
    */
   const historicalLimit = Math.min(Math.max(args.limit ?? 10, 1), 100);
-  const allClosed =
-    args.include_historical === false
-      ? []
-      : ctx.stores.targets.listBrowsers(true).filter((row) => !liveIds.has(row.browser_id));
+  const allClosed = ctx.stores.targets.listBrowsers(true).filter((row) => !liveIds.has(row.browser_id));
 
   const withRecordings = allClosed
     .map((row) => ({
@@ -71,8 +71,14 @@ export async function listInstances(
     }))
     .filter((row) => row.recorded.requests > 0 || row.recorded.console_entries > 0);
 
-  const historical = withRecordings.slice(0, historicalLimit);
-  const hiddenHistorical = withRecordings.length - historical.length;
+  /*
+   * Historical browsers are off by default. The first call of a session is
+   * almost always "which browser is live so I can attach to it", and answering
+   * it with ten closed sessions whose last_url is chrome://newtab buries the
+   * one useful fact. The capability stays discoverable via historical_available.
+   */
+  const historical = args.include_historical === true ? withRecordings.slice(0, historicalLimit) : [];
+  const hiddenHistorical = args.include_historical === true ? withRecordings.length - historical.length : 0;
   return {
     count: running.length,
     auto_launch: ctx.config.autoLaunch,
@@ -91,6 +97,12 @@ export async function listInstances(
       launched_at: new Date(instance.launchedAt).toISOString(),
     })),
     historical: historical.length ? historical : undefined,
+    ...(args.include_historical === true || withRecordings.length === 0
+      ? {}
+      : {
+          historical_available: withRecordings.length,
+          historical_note: `${withRecordings.length} closed browser(s) still hold queryable recordings. Pass include_historical:true to list them.`,
+        }),
     ...(historical.length
       ? {
           historical_note:
@@ -134,6 +146,14 @@ export async function launch(
     ...(args.url ? { urls: [args.url] } : {}),
   });
 
+  /*
+   * `navigated_to: args.url` echoed the request as though it were an outcome.
+   * When launch-time navigation did not happen, an agent read that as
+   * confirmation and moved on to a wait that timed out for an unrelated-looking
+   * reason. Report what actually committed, or report that nothing did.
+   */
+  const landed = args.url ? await landedPage(ctx, instance) : null;
+
   return {
     browser_id: instance.id,
     profile: instance.profile,
@@ -146,8 +166,93 @@ export async function launch(
     extensions_loaded: instance.extensions,
     netlog_path: instance.netLogPath,
     tabs: instance.targets.listPages().length,
-    ...(args.url ? { navigated_to: args.url } : {}),
+    ...(args.url
+      ? landed
+        ? { requested_url: args.url, landed }
+        : {
+            requested_url: args.url,
+            landed: null,
+            navigation_error:
+              'No document committed for the requested URL at launch. The window is still blank. Call page.navigate to load it.',
+          }
+      : {}),
+    ...(ctx.registry.list().length > 1
+      ? {
+          note:
+            `${ctx.registry.list().length} browsers are now running, so browser_id is required on every subsequent call. ` +
+            `Pass browser_id:"${instance.id}" to keep driving this one.`,
+        }
+      : {}),
   };
+}
+
+/**
+ * The committed URL, title and HTTP status of a browser's active page.
+ *
+ * The title is the cheapest identity check available, and the one that catches
+ * a dev-server port collision between sibling projects - seeing a title for a
+ * different app is instant, where "HTTP 200 and it looks like a Vite app" is
+ * not.
+ */
+async function landedPage(
+  ctx: OpsContext,
+  instance: BrowserInstance,
+  target?: ManagedTarget,
+): Promise<Record<string, unknown> | null> {
+  let page = target;
+  if (!page) {
+    /*
+     * Launch-time navigation is racy: the target can exist before its document
+     * does. Give it a short window rather than declaring failure on a page that
+     * was one tick away.
+     */
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      page = instance.targets.listPages().find((t) => t.info.url && t.info.url !== 'about:blank');
+      if (page) break;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    if (!page) return null;
+  }
+  if (!page.info.url || page.info.url === 'about:blank') return null;
+
+  let url = page.info.url;
+  let title: string | null = page.info.title ?? null;
+  try {
+    const { result } = await evaluate(instance, page, {
+      expression: '[location.href, document.title, document.readyState]',
+      returnByValue: true,
+      awaitPromise: false,
+    });
+    const [href, docTitle, readyState] = (result.value ?? []) as [string?, string?, string?];
+    if (href) url = href;
+    if (docTitle !== undefined) title = docTitle;
+    return { url, title, load_state: readyState ?? null, ...documentStatus(ctx, instance.id, page.handle, url) };
+  } catch {
+    return { url, title, load_state: null, ...documentStatus(ctx, instance.id, page.handle, url) };
+  }
+}
+
+/** HTTP status of the main-frame document request, from the recorder. */
+function documentStatus(
+  ctx: OpsContext,
+  browserId: string,
+  targetHandle: string,
+  url: string,
+): Record<string, unknown> {
+  try {
+    const rows = ctx.stores.network.list({
+      browserId,
+      targetHandle,
+      resourceType: 'Document',
+      limit: 10,
+      order: 'desc',
+    });
+    const match = rows.find((row) => row.url === url) ?? rows[0];
+    return match?.status === null || match?.status === undefined ? {} : { http_status: match.status };
+  } catch {
+    return {};
+  }
 }
 
 /** Attach to a Chromium someone else started. Never killed by the daemon. */
@@ -176,6 +281,12 @@ export async function status(
 ): Promise<Record<string, unknown>> {
   const instance = await ctx.registry.resolve(args.browser_id);
   const targets = instance.targets.list();
+  let activeHandle: string | null = null;
+  try {
+    activeHandle = instance.resolvePage().handle;
+  } catch {
+    /* No page open; every entry is simply reported as inactive. */
+  }
   const byType: Record<string, number> = {};
   for (const target of targets) byType[target.type] = (byType[target.type] ?? 0) + 1;
 
@@ -194,6 +305,20 @@ export async function status(
     netlog_path: instance.netLogPath,
     uptime_ms: Date.now() - instance.launchedAt,
     targets_by_type: byType,
+    /*
+     * A count of page targets does not answer "what is on screen right now",
+     * which is the question that made a blank window survive a whole session
+     * undetected. List them with their URL and title.
+     */
+    pages: await Promise.all(
+      instance.targets.listPages().map(async (page) => ({
+        target_id: page.handle,
+        active: page.handle === activeHandle,
+        url: page.info.url,
+        title: page.info.title,
+        ...((await landedPage(ctx, instance, page)) ?? {}),
+      })),
+    ),
     recording: {
       requests: ctx.stores.network.count({ browserId: instance.id }),
       console_entries: ctx.stores.console.countEntries({ browserId: instance.id }),

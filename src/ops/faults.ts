@@ -1,5 +1,5 @@
 import type { BrowserInstance } from '../browser/instance.js';
-import { ruleMatches, type FaultRule } from '../browser/faults.js';
+import { globToRegExp, ruleMatches, type FaultRule } from '../browser/faults.js';
 import type { ManagedTarget } from '../browser/target-manager.js';
 import { AgentBrowserError, NotFoundError } from '../util/errors.js';
 import { mintId } from '../util/ids.js';
@@ -57,6 +57,14 @@ async function handlePaused(
   }
 
   rule.matched++;
+  /*
+   * A glob is tested against the whole URL, so `**\/prompt-studio/**` spans the
+   * host and happily matches the frontend route as well as the API it was meant
+   * for. Recording the first few hits is what turns that from a confusing dead
+   * end into a five-second fix.
+   */
+  if (!rule.matchedUrls) rule.matchedUrls = [];
+  if (rule.matchedUrls.length < 5) rule.matchedUrls.push(url);
   if (rule.remaining !== undefined) rule.remaining--;
 
   try {
@@ -114,8 +122,16 @@ async function addRule(
   await armRouter(instance, target);
 
   const id = mintId('flt');
-  const full: FaultRule = { ...rule, id, matched: 0, createdAt: Date.now() };
+  const full: FaultRule = { ...rule, id, matched: 0, matchedUrls: [], createdAt: Date.now() };
   instance.faults.set(id, full);
+
+  /*
+   * Dry-run the pattern against what has already been recorded, before the
+   * caller goes and reproduces anything. A rule that matches nothing and a rule
+   * that matches the app itself are the two failure modes, and both are silent
+   * without this.
+   */
+  const preview = matchPreview(ctx, instance.id, full, target.info.url);
 
   return {
     browser_id: instance.id,
@@ -124,7 +140,106 @@ async function addRule(
     action: rule.action,
     url_pattern: rule.urlPattern,
     ...(rule.remaining === undefined ? {} : { applies_to_next: rule.remaining }),
-    hint: 'Reproduce the behaviour, then check network.list_requests and console.query for how the page coped.',
+    ...preview,
+    hint: 'Reproduce the behaviour, then check network.list_requests and console.query for how the page coped. fault.list shows what the rule actually fired on.',
+  };
+}
+
+/**
+ * What would this pattern do, judged against the traffic already on record.
+ *
+ * The recorder is holding the URLs anyway, so this costs nothing and makes
+ * pattern authoring verifiable rather than hopeful.
+ */
+function matchPreview(
+  ctx: OpsContext,
+  browserId: string,
+  rule: FaultRule,
+  currentPageUrl: string,
+): Record<string, unknown> {
+  let rows: Array<{ url: string; resource_type: string | null }>;
+  try {
+    rows = ctx.stores.network.list({ browserId, limit: 3000, offset: 0 });
+  } catch {
+    return {};
+  }
+  const seen = new Set<string>();
+  const samples: string[] = [];
+  let matched = 0;
+  let matchedDocuments = 0;
+  for (const row of rows) {
+    if (!ruleMatches({ ...rule, remaining: undefined }, row.url, row.resource_type ?? undefined)) continue;
+    matched++;
+    if (row.resource_type === 'Document') matchedDocuments++;
+    if (!seen.has(row.url) && samples.length < 5) {
+      seen.add(row.url);
+      samples.push(row.url);
+    }
+  }
+
+  const hitsCurrentPage = globToRegExp(rule.urlPattern).test(currentPageUrl);
+  const out: Record<string, unknown> = {
+    matches_in_recording: matched,
+    ...(samples.length ? { matched_so_far: samples } : {}),
+  };
+  if (matched === 0) {
+    out.warning =
+      `This pattern matches none of the ${rows.length} recorded requests. It may still fire on traffic yet to happen, ` +
+      'but if you expected a hit now, check the glob with network.summarize(group_by:"domain"). Note that `**` spans the host, and a pattern is anchored end to end.';
+  } else if (hitsCurrentPage || matchedDocuments > 0) {
+    // Failing the page's own document means the app never loads, so whatever
+    // offline behaviour was being tested is not what gets observed.
+    out.warning =
+      'This pattern also matches the Document request for the page you are driving' +
+      (hitsCurrentPage ? ` (${currentPageUrl})` : '') +
+      '. The app itself will fail to load, which is almost never the intent - scope the pattern to the API origin, e.g. "http://localhost:5000/**".';
+  }
+  return out;
+}
+
+/** Dry-run a glob against the recording without creating a rule. */
+export async function test(
+  ctx: OpsContext,
+  args: FaultArgs & { url: string; resource_types?: string[]; limit?: number },
+): Promise<Record<string, unknown>> {
+  const instance = await ctx.registry.resolve(args.browser_id);
+  const target = instance.resolvePage(args.target_id);
+  const limit = Math.min(Math.max(args.limit ?? 10, 1), 100);
+  const probe: FaultRule = {
+    id: 'dry-run',
+    urlPattern: args.url,
+    action: 'abort',
+    matched: 0,
+    createdAt: Date.now(),
+    ...(args.resource_types ? { resourceTypes: args.resource_types } : {}),
+  };
+
+  const rows = ctx.stores.network.list({ browserId: instance.id, limit: 3000, offset: 0 });
+  const matched: string[] = [];
+  const notMatched: string[] = [];
+  const seenMatch = new Set<string>();
+  const seenMiss = new Set<string>();
+  for (const row of rows) {
+    const hit = ruleMatches(probe, row.url, row.resource_type ?? undefined);
+    const bucket = hit ? matched : notMatched;
+    const seen = hit ? seenMatch : seenMiss;
+    if (!seen.has(row.url) && bucket.length < limit) {
+      seen.add(row.url);
+      bucket.push(row.url);
+    }
+  }
+  const total = rows.filter((row) => ruleMatches(probe, row.url, row.resource_type ?? undefined)).length;
+
+  return {
+    browser_id: instance.id,
+    url_pattern: args.url,
+    requests_considered: rows.length,
+    matches: total,
+    sample_matches: matched,
+    sample_non_matches: notMatched,
+    ...matchPreview(ctx, instance.id, probe, target.info.url),
+    hint:
+      'No rule was created. `*` and `**` both match any run of characters and span the host; `?` is literal; a pattern is anchored end to end but a trailing query string or fragment is still matched.',
   };
 }
 
@@ -214,6 +329,10 @@ export async function list(ctx: OpsContext, args: FaultArgs): Promise<Record<str
       action: rule.action,
       url_pattern: rule.urlPattern,
       times_applied: rule.matched,
+      ...(rule.matchedUrls?.length ? { matched_so_far: rule.matchedUrls } : {}),
+      ...(rule.matched === 0
+        ? { note: 'This rule has never fired. Check the glob with fault.test before concluding the app is at fault.' }
+        : {}),
       remaining: rule.remaining ?? null,
       exhausted: rule.remaining !== undefined && rule.remaining <= 0,
       created_at: new Date(rule.createdAt).toISOString(),

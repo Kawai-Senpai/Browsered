@@ -194,16 +194,75 @@ export async function navigate(
   const settled = lifecycle ? await lifecycle : null;
 
   const current = await currentUrl(instance, target);
+  const landed = await documentIdentity(instance, target);
+
+  /*
+   * The committed document title is the cheapest identity check there is, and
+   * the one that catches "this port is serving a different project" - a dev
+   * server collision between sibling repos is an extremely common setup.
+   */
+  const status = documentStatus(ctx, instance.id, target.handle, current);
+  const committed = result.errorText ? false : current !== 'about:blank';
+
   return {
     target_id: target.handle,
     requested_url: args.url,
     url: current,
+    title: landed.title,
+    ...(status === null ? {} : { http_status: status }),
+    committed,
     frame_id: result.frameId,
     error: result.errorText ?? null,
     wait_until: waitUntil,
     settled: settled === null ? undefined : settled,
-    timed_out: settled === false,
+    ...(settled === false
+      ? {
+          reason: committed
+            ? `${waitUntil} was not reached within ${timeout}ms; the document did commit and is at ${current}.`
+            : `${waitUntil} was not reached within ${timeout}ms and no document committed.`,
+        }
+      : {}),
   };
+}
+
+/** Committed URL and title of the document actually on screen. */
+async function documentIdentity(
+  instance: BrowserInstance,
+  target: ManagedTarget,
+): Promise<{ url: string; title: string | null }> {
+  try {
+    const { result } = await evaluate(instance, target, {
+      expression: '[location.href, document.title]',
+      returnByValue: true,
+      awaitPromise: false,
+    });
+    const [url, title] = (result.value ?? []) as [string?, string?];
+    return { url: url ?? target.info.url, title: title ?? null };
+  } catch {
+    return { url: target.info.url, title: target.info.title ?? null };
+  }
+}
+
+/** The status of the main-frame document request, from the recorder. */
+function documentStatus(
+  ctx: OpsContext,
+  browserId: string,
+  targetHandle: string,
+  url: string,
+): number | null {
+  try {
+    const rows = ctx.stores.network.list({
+      browserId,
+      targetHandle,
+      resourceType: 'Document',
+      limit: 10,
+      order: 'desc',
+    });
+    const match = rows.find((row) => row.url === url) ?? rows[0];
+    return match?.status ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function currentUrl(instance: BrowserInstance, target: ManagedTarget): Promise<string> {
@@ -316,6 +375,138 @@ export async function history(
 
 // ---------------------------------------------------------------- vision
 
+// ---------------------------------------------------------------- capture helpers
+
+/**
+ * Captures are serialised per target. Chromium answers exactly one
+ * Page.captureScreenshot at a time; issuing a second while a full_page capture
+ * is still stitching does not queue politely, it hangs until the timeout - the
+ * single most reported browserd failure.
+ */
+const captureLocks = new Map<string, Promise<unknown>>();
+
+async function serializeCapture<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = captureLocks.get(key) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(fn);
+  captureLocks.set(
+    key,
+    run.catch(() => undefined),
+  );
+  try {
+    return await run;
+  } finally {
+    if (captureLocks.get(key) === run) captureLocks.delete(key);
+  }
+}
+
+/**
+ * Wait for entrance animations to finish before capturing.
+ *
+ * A screenshot is the evidence an agent judges a design by, and a capture taken
+ * 40% through a fade invents a defect that no user ever sees. document
+ * .getAnimations() already knows; polling it costs a few milliseconds.
+ */
+const RUNNING_ANIMATIONS_FN = `(() => {
+  if (typeof document.getAnimations !== 'function') return 0;
+  let n = 0;
+  for (const a of document.getAnimations()) {
+    if (a.playState !== 'running') continue;
+    // Infinite animations (spinners, marquees) never settle; waiting on them
+    // would turn every capture into a timeout.
+    const timing = typeof a.effect?.getComputedTiming === 'function' ? a.effect.getComputedTiming() : null;
+    const duration = timing ? timing.duration : null;
+    if (duration === Infinity || duration === null || duration === undefined) continue;
+    if (timing && timing.iterations === Infinity) continue;
+    n++;
+  }
+  return n;
+})()`;
+
+async function settleAnimations(
+  instance: BrowserInstance,
+  target: ManagedTarget,
+  timeoutMs: number,
+): Promise<number> {
+  const deadline = Date.now() + Math.max(timeoutMs, 0);
+  let running = 0;
+  do {
+    try {
+      const { result } = await evaluate(instance, target, {
+        expression: RUNNING_ANIMATIONS_FN,
+        returnByValue: true,
+        awaitPromise: false,
+      });
+      running = Number(result.value ?? 0);
+    } catch {
+      return 0;
+    }
+    if (running === 0) return 0;
+    await delay(100);
+  } while (Date.now() < deadline);
+  return running;
+}
+
+/**
+ * Walk the page top to bottom so IntersectionObserver-driven content (the
+ * `whileInView` pattern every marketing page uses) actually reveals itself.
+ * Without this a full_page capture returns large blank bands where sections
+ * are still at opacity 0, which reads as an application bug.
+ */
+const SCROLL_THROUGH_FN = `(async () => {
+  const step = Math.max(200, Math.round(innerHeight * 0.8));
+  const start = window.scrollY;
+  const height = document.documentElement.scrollHeight;
+  for (let y = 0; y < height; y += step) {
+    window.scrollTo({ top: y, behavior: 'instant' });
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  window.scrollTo({ top: height, behavior: 'instant' });
+  await new Promise((r) => setTimeout(r, 80));
+  window.scrollTo({ top: start, behavior: 'instant' });
+  await new Promise((r) => setTimeout(r, 80));
+  return height;
+})()`;
+
+async function triggerLazyContent(instance: BrowserInstance, target: ManagedTarget): Promise<void> {
+  try {
+    await evaluate(instance, target, {
+      expression: SCROLL_THROUGH_FN,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  } catch {
+    /* Best effort: a capture without the sweep beats no capture. */
+  }
+}
+
+/** Cheap post-mortem for a capture that never came back. */
+async function captureDiagnostics(
+  instance: BrowserInstance,
+  target: ManagedTarget,
+): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {
+    target_id: target.handle,
+    url: target.info.url,
+    attached: instance.targets.get(target.handle) !== undefined,
+  };
+  try {
+    const { result } = await evaluate(instance, target, {
+      expression: '[location.href, document.readyState, document.title]',
+      returnByValue: true,
+      awaitPromise: false,
+    });
+    const [url, readyState, title] = (result.value ?? []) as [string?, string?, string?];
+    out.url = url ?? out.url;
+    out.load_state = readyState ?? null;
+    out.title = title ?? null;
+    out.renderer_responsive = true;
+  } catch {
+    out.renderer_responsive = false;
+    out.load_state = null;
+  }
+  return out;
+}
+
 export async function screenshot(
   ctx: OpsContext,
   args: PageArgs & {
@@ -326,21 +517,48 @@ export async function screenshot(
     return_image?: boolean;
     highlight?: string;
     label?: string;
+    timeout_ms?: number;
+    settle?: boolean;
+    settle_timeout_ms?: number;
+    trigger_lazy_content?: boolean;
+    max_width?: number;
   },
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   const mode = args.mode ?? 'viewport';
   const format = args.format ?? 'png';
+  // 60s was the old default and it never once produced an image: a viewport
+  // capture that has not returned in a few seconds is wedged, not slow.
+  const timeout = Math.min(Math.max(args.timeout_ms ?? 15_000, 1_000), 120_000);
   const params: Record<string, unknown> = { format, captureBeyondViewport: false };
   if (format !== 'png' && args.quality !== undefined) params.quality = args.quality;
 
+  /*
+   * Reveal lazily-animated content before measuring anything. Default on for
+   * full_page, where a stitched capture otherwise shows blank bands wherever an
+   * IntersectionObserver never fired.
+   */
+  const sweep = args.trigger_lazy_content ?? mode === 'full_page';
+  if (sweep) await triggerLazyContent(instance, target);
+
+  // Downscaling is done by Chromium at capture time via the clip scale, so a
+  // wide desktop screenshot costs a fraction of the bytes without a resize step.
+  let scale = 1;
   if (mode === 'full_page') {
     const metrics = await target.session.send<{
       cssContentSize: { width: number; height: number };
     }>('Page.getLayoutMetrics');
     const size = metrics.cssContentSize;
-    params.clip = { x: 0, y: 0, width: size.width, height: size.height, scale: 1 };
+    if (args.max_width && size.width > args.max_width) scale = args.max_width / size.width;
+    params.clip = { x: 0, y: 0, width: size.width, height: size.height, scale };
     params.captureBeyondViewport = true;
+  } else if (mode === 'viewport' && args.max_width) {
+    const metrics = await target.session.send<{
+      cssLayoutViewport: { clientWidth: number; clientHeight: number };
+    }>('Page.getLayoutMetrics');
+    const view = metrics.cssLayoutViewport;
+    if (view.clientWidth > args.max_width) scale = args.max_width / view.clientWidth;
+    params.clip = { x: 0, y: 0, width: view.clientWidth, height: view.clientHeight, scale };
   } else if (mode === 'element') {
     const element = await resolveElement(instance, target, args);
     const box = await boundingBox(target.session, element.objectId);
@@ -370,9 +588,39 @@ export async function screenshot(
     highlighted = element.description;
   }
 
+  /*
+   * Settle last, after the lazy sweep and the highlight: scrolling and overlays
+   * both start animations of their own.
+   */
+  let animationsRunning = 0;
+  if (args.settle !== false) {
+    animationsRunning = await settleAnimations(instance, target, args.settle_timeout_ms ?? 2_000);
+  }
+
   let data: string;
   try {
-    ({ data } = await target.session.send<{ data: string }>('Page.captureScreenshot', params, 60_000));
+    data = await serializeCapture(`${instance.id}:${target.handle}`, async () => {
+      const shot = await target.session.send<{ data: string }>('Page.captureScreenshot', params, timeout);
+      return shot.data;
+    });
+  } catch (error) {
+    if (error instanceof TimeoutError || /timed out/i.test(String((error as Error)?.message))) {
+      const diagnostics = await captureDiagnostics(instance, target);
+      throw new AgentBrowserError(
+        'screenshot_timeout',
+        `Page.captureScreenshot did not return within ${timeout}ms (target is at ${String(diagnostics.url)}, load_state: ${String(diagnostics.load_state)}).`,
+        {
+          operation: 'page.screenshot',
+          ms: timeout,
+          mode,
+          ...diagnostics,
+          hint: diagnostics.renderer_responsive
+            ? 'The renderer answers JavaScript, so the compositor is the stuck part. Retry once; a plain mode:"viewport" capture usually succeeds.'
+            : 'The renderer is not answering at all. Check for a blocking dialog (page.list_dialogs) or a wedged tab.',
+        },
+      );
+    }
+    throw error;
   } finally {
     if (args.highlight) await target.session.trySend('Overlay.hideHighlight');
   }
@@ -395,7 +643,17 @@ export async function screenshot(
     size_bytes: buffer.length,
     artifact: toArtifactRef(artifact),
     url: await currentUrl(instance, target),
+    title: target.info.title,
+    ...(scale === 1 ? {} : { scaled: Number(scale.toFixed(3)) }),
+    ...(sweep ? { scrolled_through: true } : {}),
     ...(highlighted ? { highlighted } : {}),
+    ...(animationsRunning > 0
+      ? {
+          warning:
+            `${animationsRunning} animation(s) were still running at capture time, so this image may show a mid-transition state that no user sees. ` +
+            'Raise settle_timeout_ms, or treat dimmed/blank regions as suspect rather than as defects.',
+        }
+      : {}),
   };
   if (args.save_path) {
     out.saved_to = ctx.stores.artifacts.exportTo(artifact.artifact_handle, args.save_path);
@@ -412,6 +670,7 @@ export async function screenshot(
 interface SnapshotOptions extends PageArgs {
   max_nodes?: number;
   interactive_only?: boolean;
+  root_selector?: string;
 }
 
 /**
@@ -497,8 +756,49 @@ export async function snapshot(ctx: OpsContext, args: SnapshotOptions): Promise<
     for (const childId of node.childIds ?? []) walk(childId, childDepth);
   };
 
-  const root = nodes[0];
+  /*
+   * A root_selector scopes the walk to one subtree. Pages that render a large
+   * visually-hidden SEO block ahead of the real content otherwise spend the
+   * whole node budget before reaching anything interactive.
+   */
+  let root = nodes[0];
+  let rootNote: string | undefined;
+  if (args.root_selector) {
+    const element = await resolveElement(instance, target, { selector: args.root_selector });
+    const scoped = nodes.find((n) => n.backendDOMNodeId === element.backendNodeId);
+    if (scoped) {
+      root = scoped;
+    } else {
+      rootNote = `root_selector "${args.root_selector}" resolved to ${element.description}, but that node is not in the accessibility tree (it may be aria-hidden or display:none). Snapshotting the whole document instead.`;
+    }
+  }
   if (root) walk(root.nodeId, 0);
+
+  /*
+   * An empty tree over a non-empty DOM is the failure that makes an agent
+   * conclude "the page is broken" and abandon refs for CSS selectors. Say what
+   * actually happened, and where the budget went.
+   */
+  let emptyWarning: string | undefined;
+  if (emitted <= 1) {
+    try {
+      const { result } = await evaluate(instance, target, {
+        expression:
+          '({children: document.body ? document.body.children.length : 0, interactive: document.querySelectorAll("a,button,input,select,textarea,[role],[onclick],[tabindex]").length})',
+        returnByValue: true,
+        awaitPromise: false,
+      });
+      const dom = (result.value ?? {}) as { children?: number; interactive?: number };
+      if ((dom.children ?? 0) > 0) {
+        emptyWarning =
+          `The snapshot produced ${emitted} node(s) but the DOM has ${dom.children} body children and ` +
+          `${dom.interactive ?? 0} interactive elements. The accessibility tree is not reflecting this page. ` +
+          'Try root_selector to scope to the content region, raise max_nodes, or fall back to dom.query.';
+      }
+    } catch {
+      /* Diagnosis is a bonus; the snapshot itself already returned. */
+    }
+  }
 
   // Refs are only meaningful against the snapshot that produced them.
   instance.snapshotRefs.set(target.handle, refs);
@@ -509,6 +809,12 @@ export async function snapshot(ctx: OpsContext, args: SnapshotOptions): Promise<
     title: target.info.title,
     node_count: emitted,
     truncated,
+    max_nodes: maxNodes,
+    ...(truncated ? { truncation_reason: `max_nodes=${maxNodes} reached; raise max_nodes or pass root_selector to scope the walk.` } : {}),
+    ax_nodes_available: nodes.length,
+    ...(args.root_selector ? { root_selector: args.root_selector } : {}),
+    ...(rootNote ? { root_note: rootNote } : {}),
+    ...(emptyWarning ? { warning: emptyWarning } : {}),
     ref_count: refs.size,
     snapshot: lines.join('\n'),
     hint: 'Pass ref="eNN" to page.click / page.type / dom.inspect. Refs expire on the next snapshot.',
@@ -535,6 +841,140 @@ function locatorNotes(element: ResolvedElement): Record<string, unknown> {
   return out;
 }
 
+/** CDP mouse events are in CSS pixels; screenshots are in device pixels. */
+async function pointReport(
+  instance: BrowserInstance,
+  target: ManagedTarget,
+  point: { x: number; y: number },
+): Promise<Record<string, unknown>> {
+  let dpr = 1;
+  try {
+    const { result } = await evaluate(instance, target, {
+      expression: 'devicePixelRatio',
+      returnByValue: true,
+      awaitPromise: false,
+    });
+    dpr = Number(result.value ?? 1) || 1;
+  } catch {
+    /* A ratio of 1 is right for the overwhelming majority of targets. */
+  }
+  const css = { x: Math.round(point.x), y: Math.round(point.y) };
+  return {
+    ...css,
+    css,
+    device: { x: Math.round(point.x * dpr), y: Math.round(point.y * dpr) },
+    dpr,
+  };
+}
+
+/**
+ * Arm a mutation counter so an action can report whether the page reacted.
+ *
+ * `clicked: true` only ever meant "input events were dispatched at these
+ * coordinates". When a synthetic click lands on the right element but the
+ * framework handler never runs, that reads as an application bug and sends an
+ * agent off diagnosing code that is fine.
+ */
+const ARM_MUTATION_FN = `(() => {
+  const w = window;
+  if (w.__browserdMo) { try { w.__browserdMo.disconnect(); } catch (e) {} }
+  w.__browserdMutations = 0;
+  const mo = new MutationObserver((records) => { w.__browserdMutations += records.length; });
+  mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+  w.__browserdMo = mo;
+  return true;
+})()`;
+
+const READ_MUTATION_FN = `(() => {
+  const w = window;
+  const n = w.__browserdMutations || 0;
+  if (w.__browserdMo) { try { w.__browserdMo.disconnect(); } catch (e) {} w.__browserdMo = null; }
+  return n;
+})()`;
+
+async function armMutationWatch(instance: BrowserInstance, target: ManagedTarget): Promise<boolean> {
+  try {
+    await evaluate(instance, target, {
+      expression: ARM_MUTATION_FN,
+      returnByValue: true,
+      awaitPromise: false,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readMutationWatch(instance: BrowserInstance, target: ManagedTarget): Promise<number> {
+  try {
+    const { result } = await evaluate(instance, target, {
+      expression: READ_MUTATION_FN,
+      returnByValue: true,
+      awaitPromise: false,
+    });
+    return Number(result.value ?? 0);
+  } catch {
+    // The execution context is gone, which means the click navigated. That is
+    // the largest possible change.
+    return -1;
+  }
+}
+
+/**
+ * Did the page react? Optionally retry through the element's own .click(),
+ * which drives framework handlers even when synthetic input does not.
+ */
+async function verifyClick(
+  instance: BrowserInstance,
+  target: ManagedTarget,
+  element: ResolvedElement,
+  armed: boolean,
+  verifyMs: number,
+  retry: boolean,
+): Promise<Record<string, unknown>> {
+  if (!armed) return {};
+  await delay(verifyMs);
+  const mutations = await readMutationWatch(instance, target);
+  if (mutations !== 0) {
+    return {
+      observed_change: true,
+      ...(mutations < 0 ? { changed_by: 'navigation' } : { dom_mutations: mutations }),
+    };
+  }
+  if (!retry) {
+    return {
+      observed_change: false,
+      note:
+        `No DOM mutation followed the click within ${verifyMs}ms. The events were dispatched at the right element, but the app may not have handled them ` +
+        '(or the click legitimately changes nothing). Pass retry_if_unchanged:true to fall back to the element own .click().',
+    };
+  }
+  const rearmed = await armMutationWatch(instance, target);
+  try {
+    await target.session.send('Runtime.callFunctionOn', {
+      objectId: element.objectId,
+      functionDeclaration: 'function () { this.click(); }',
+      awaitPromise: false,
+    });
+  } catch {
+    return { observed_change: false, retried_via: 'dom_click', retry_error: 'element.click() threw' };
+  }
+  if (!rearmed) return { observed_change: false, retried_via: 'dom_click' };
+  await delay(verifyMs);
+  const after = await readMutationWatch(instance, target);
+  return {
+    observed_change: after !== 0,
+    retried_via: 'dom_click',
+    ...(after > 0 ? { dom_mutations: after } : {}),
+    ...(after !== 0
+      ? {
+          note:
+            'Synthetic input did nothing; the element own .click() did. The app is fine - the input path was not reaching its handler.',
+        }
+      : {}),
+  };
+}
+
 export async function click(
   ctx: OpsContext,
   args: PageArgs & {
@@ -542,6 +982,9 @@ export async function click(
     click_count?: number;
     modifiers?: string[];
     force?: boolean;
+    verify?: boolean;
+    verify_ms?: number;
+    retry_if_unchanged?: boolean;
   },
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
@@ -551,6 +994,30 @@ export async function click(
   const modifiers = modifiersFromNames(args.modifiers);
   const button = args.button ?? 'left';
   const clickCount = args.click_count ?? 1;
+  const verify = args.verify !== false;
+  const verifyMs = Math.min(Math.max(args.verify_ms ?? 300, 50), 5_000);
+  const armed = verify ? await armMutationWatch(instance, target) : false;
+
+  const finish = async (
+    input: 'mouse' | 'touch',
+    extra: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> => {
+    const at = await pointReport(instance, target, center);
+    const out: Record<string, unknown> = {
+      target_id: target.handle,
+      clicked: element.description,
+      at,
+      input,
+      click_count: clickCount,
+      ...extra,
+      ...locatorNotes(element),
+    };
+    if (!armed) {
+      out.hint =
+        'clicked means input events were dispatched at these coordinates, not that the app handled them. Pair this with page.wait_for on a real consequence.';
+    }
+    return out;
+  };
 
   // Under touch emulation a mouse event is not what the page listens for, so
   // dispatch a real tap instead.
@@ -566,35 +1033,34 @@ export async function click(
       touchPoints: [],
       modifiers,
     });
-    return {
-      target_id: target.handle,
-      clicked: element.description,
-      at: { x: Math.round(center.x), y: Math.round(center.y) },
-      input: 'touch',
-      click_count: clickCount,
-      ...locatorNotes(element),
-    };
+    return finish(
+      'touch',
+      await verifyClick(instance, target, element, armed, verifyMs, args.retry_if_unchanged === true),
+    );
   }
 
-  const base = { x: center.x, y: center.y, button, modifiers, clickCount };
+  /*
+   * `buttons` is the pressed-button bitmask. Chromium synthesises PointerEvents
+   * from these, and a pointerdown carrying buttons:0 is one a framework can
+   * legitimately ignore - a plausible cause of "the click reported success but
+   * nothing happened".
+   */
+  const buttonsMask = button === 'left' ? 1 : button === 'right' ? 2 : 4;
+  const base = { x: center.x, y: center.y, button, modifiers, clickCount, pointerType: 'mouse' };
   await target.session.send('Input.dispatchMouseEvent', {
     ...base,
     type: 'mouseMoved',
     button: 'none',
+    buttons: 0,
     clickCount: 0,
   });
-  await target.session.send('Input.dispatchMouseEvent', { ...base, type: 'mousePressed' });
-  await target.session.send('Input.dispatchMouseEvent', { ...base, type: 'mouseReleased' });
+  await target.session.send('Input.dispatchMouseEvent', { ...base, type: 'mousePressed', buttons: buttonsMask });
+  await target.session.send('Input.dispatchMouseEvent', { ...base, type: 'mouseReleased', buttons: 0 });
 
-  return {
-    target_id: target.handle,
-    clicked: element.description,
-    at: { x: Math.round(center.x), y: Math.round(center.y) },
-    input: 'mouse',
+  return finish('mouse', {
     button,
-    click_count: clickCount,
-    ...locatorNotes(element),
-  };
+    ...(await verifyClick(instance, target, element, armed, verifyMs, args.retry_if_unchanged === true)),
+  });
 }
 
 export async function hover(ctx: OpsContext, args: PageArgs): Promise<Record<string, unknown>> {
@@ -611,8 +1077,50 @@ export async function hover(ctx: OpsContext, args: PageArgs): Promise<Record<str
   return {
     target_id: target.handle,
     hovered: element.description,
-    at: { x: Math.round(center.x), y: Math.round(center.y) },
+    at: await pointReport(instance, target, center),
   };
+}
+
+/** What kind of field are we typing into? Newline handling depends on it. */
+async function fieldKind(
+  target: ManagedTarget,
+  objectId: string,
+): Promise<{ tag: string; type: string | null; multiline: boolean }> {
+  try {
+    const response = await target.session.send<{ result: { value?: unknown } }>('Runtime.callFunctionOn', {
+      objectId,
+      returnByValue: true,
+      functionDeclaration: `function () {
+        return {
+          tag: this.tagName || '',
+          type: this.type || null,
+          multiline: this.tagName === 'TEXTAREA' || this.isContentEditable === true,
+        };
+      }`,
+    });
+    const value = (response.result.value ?? {}) as { tag?: string; type?: string | null; multiline?: boolean };
+    return { tag: value.tag ?? '', type: value.type ?? null, multiline: value.multiline === true };
+  } catch {
+    return { tag: '', type: null, multiline: false };
+  }
+}
+
+/** Read back what the field actually holds, so `characters` is not a guess. */
+async function fieldLength(target: ManagedTarget, objectId: string): Promise<number | null> {
+  try {
+    const response = await target.session.send<{ result: { value?: unknown } }>('Runtime.callFunctionOn', {
+      objectId,
+      returnByValue: true,
+      functionDeclaration: `function () {
+        const v = typeof this.value === 'string' ? this.value : (this.isContentEditable ? this.innerText : null);
+        return v === null ? null : v.length;
+      }`,
+    });
+    const value = response.result.value;
+    return typeof value === 'number' ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function typeText(
@@ -622,6 +1130,7 @@ export async function typeText(
     clear?: boolean;
     delay_ms?: number;
     fast?: boolean;
+    insert_text?: boolean;
     press_enter?: boolean;
   },
 ): Promise<Record<string, unknown>> {
@@ -637,10 +1146,30 @@ export async function typeText(
     await pressKey(target.session, 'Delete', 0);
   }
 
-  if (args.fast) {
+  const kind = await fieldKind(target, element.objectId);
+  const newlines = (args.text.match(/\n/g) ?? []).length;
+  const insert = args.insert_text === true || args.fast === true;
+  let droppedNewlines = 0;
+
+  if (insert) {
+    // insertText carries newlines verbatim, which is why it is the right mode
+    // for pasting multi-line content.
     await target.session.send('Input.insertText', { text: args.text });
   } else {
     for (const char of args.text) {
+      if (char === '\n') {
+        /*
+         * A newline is not a character a key event can carry. Typing it as one
+         * silently flattened multi-line content onto a single line - the field
+         * looked fine, the markdown preview did not.
+         */
+        if (kind.multiline) {
+          await pressKey(target.session, 'Enter', 0);
+        } else {
+          droppedNewlines++;
+        }
+        continue;
+      }
       await dispatchChar(target.session, char);
       if (args.delay_ms) await delay(args.delay_ms);
     }
@@ -648,12 +1177,23 @@ export async function typeText(
 
   if (args.press_enter) await pressKey(target.session, 'Enter', 0);
 
+  const landed = await fieldLength(target, element.objectId);
   return {
     target_id: target.handle,
     typed_into: element.description,
     characters: [...args.text].length,
+    landed_characters: landed,
+    ...(newlines ? { newlines, newlines_typed: insert || kind.multiline ? newlines : 0 } : {}),
+    mode: insert ? 'insert_text' : 'keystrokes',
     cleared: args.clear === true,
     pressed_enter: args.press_enter === true,
+    ...(droppedNewlines
+      ? {
+          warning:
+            `${droppedNewlines} newline(s) could not be typed into <${kind.tag.toLowerCase() || 'element'}>, which is a single-line field. ` +
+            'The text landed on one line. Use a textarea/contenteditable target, or insert_text:true if the field really should hold them.',
+        }
+      : {}),
   };
 }
 
@@ -751,22 +1291,49 @@ export async function scroll(
   const metrics = await target.session.send<{
     cssLayoutViewport: { clientWidth: number; clientHeight: number };
   }>('Page.getLayoutMetrics');
-  await target.session.send('Input.dispatchMouseEvent', {
-    type: 'mouseWheel',
-    x: Math.round(metrics.cssLayoutViewport.clientWidth / 2),
-    y: Math.round(metrics.cssLayoutViewport.clientHeight / 2),
-    deltaX: args.delta_x ?? 0,
-    deltaY: args.delta_y ?? 400,
-  });
+  const deltaX = args.delta_x ?? 0;
+  const deltaY = args.delta_y ?? 400;
+
+  /*
+   * Input.dispatchMouseEvent for a wheel can stall for the full CDP timeout on
+   * a page whose compositor is busy, while window.scrollBy does the same job
+   * instantly. Give the real wheel a short window, then fall back rather than
+   * burning 30 seconds on a scroll.
+   */
+  let via: 'wheel' | 'script' = 'wheel';
+  try {
+    await target.session.send(
+      'Input.dispatchMouseEvent',
+      {
+        type: 'mouseWheel',
+        x: Math.round(metrics.cssLayoutViewport.clientWidth / 2),
+        y: Math.round(metrics.cssLayoutViewport.clientHeight / 2),
+        deltaX,
+        deltaY,
+      },
+      5_000,
+    );
+  } catch {
+    via = 'script';
+    await evaluate(instance, target, {
+      expression: `window.scrollBy({left: ${deltaX}, top: ${deltaY}, behavior: 'instant'})`,
+      returnByValue: true,
+    });
+  }
+
   const { result } = await evaluate(instance, target, {
     expression: '[window.scrollX, window.scrollY]',
     returnByValue: true,
   });
   return {
     target_id: target.handle,
-    delta_x: args.delta_x ?? 0,
-    delta_y: args.delta_y ?? 400,
+    delta_x: deltaX,
+    delta_y: deltaY,
+    via,
     position: result.value,
+    ...(via === 'script'
+      ? { note: 'Wheel dispatch did not return within 5s, so the scroll was done programmatically. Momentum and wheel listeners did not run.' }
+      : {}),
   };
 }
 
@@ -873,9 +1440,46 @@ export async function unhighlight(ctx: OpsContext, args: PageArgs): Promise<Reco
 
 // ---------------------------------------------------------------- text + waiting
 
+/**
+ * Text as a sighted reader sees it.
+ *
+ * innerText already drops display:none, but not the visually-hidden SEO/LLM
+ * block that marketing pages put at the top of <body>: it is clipped, not
+ * hidden, so it survives - and then the first 1500 characters of every read are
+ * boilerplate nobody asked for.
+ */
+const VISIBLE_TEXT_FN = `function (root) {
+  const clipped = (el) => {
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') return true;
+    if (s.clipPath && s.clipPath !== 'none') return true;
+    if (s.clip && s.clip !== 'auto') return true;
+    if (Math.abs(parseFloat(s.textIndent) || 0) > 9000) return true;
+    const r = el.getBoundingClientRect();
+    // Both dimensions collapsed is the sr-only signature. One collapsed
+    // dimension is an ordinary layout artefact, so it is left alone.
+    if (r.width <= 1 && r.height <= 1) return true;
+    return false;
+  };
+  let out = '';
+  const walk = (node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) { out += child.nodeValue; continue; }
+      if (child.nodeType !== 1) continue;
+      const tag = child.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue;
+      if (clipped(child)) continue;
+      walk(child);
+      if (getComputedStyle(child).display !== 'inline') out += '\\n';
+    }
+  };
+  walk(root);
+  return out.replace(/[ \\t]+/g, ' ').replace(/ ?\\n ?/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+}`;
+
 export async function extractText(
   ctx: OpsContext,
-  args: PageArgs & { max_chars?: number; include_hidden?: boolean },
+  args: PageArgs & { max_chars?: number; include_hidden?: boolean; visible_only?: boolean },
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   const hasLocator =
@@ -885,6 +1489,8 @@ export async function extractText(
     args.text !== undefined ||
     args.backend_node_id !== undefined;
 
+  const visibleOnly = args.visible_only === true && args.include_hidden !== true;
+
   let text: string;
   if (hasLocator) {
     const element = await resolveElement(instance, target, args);
@@ -893,18 +1499,22 @@ export async function extractText(
       {
         objectId: element.objectId,
         returnByValue: true,
-        functionDeclaration: `function (includeHidden) {
+        functionDeclaration: visibleOnly
+          ? `function () { return (${VISIBLE_TEXT_FN})(this); }`
+          : `function (includeHidden) {
           return includeHidden ? (this.textContent || '') : (this.innerText || this.textContent || '');
         }`,
-        arguments: [{ value: args.include_hidden === true }],
+        arguments: visibleOnly ? [] : [{ value: args.include_hidden === true }],
       },
     );
     text = String(response.result.value ?? '');
   } else {
     const { result } = await evaluate(instance, target, {
-      expression: args.include_hidden
-        ? 'document.documentElement.textContent || ""'
-        : 'document.body ? document.body.innerText : ""',
+      expression: visibleOnly
+        ? `document.body ? (${VISIBLE_TEXT_FN})(document.body) : ''`
+        : args.include_hidden
+          ? 'document.documentElement.textContent || ""'
+          : 'document.body ? document.body.innerText : ""',
       returnByValue: true,
     });
     text = String(result.value ?? '');
@@ -919,8 +1529,17 @@ export async function extractText(
     url: await currentUrl(instance, target),
     length: text.length,
     truncated,
+    ...(visibleOnly ? { visible_only: true } : {}),
     text: body,
   };
+  if (text.length === 0) {
+    out.hint = hasLocator
+      ? 'The element resolved but holds no text. Check you are on the right node with dom.inspect, or drop visible_only if the text is deliberately hidden.'
+      : 'The page has no readable text yet. It may still be loading (page.wait_for), or the content may live in an iframe (page.list_frames).';
+  } else if (!visibleOnly && text.length > 20_000) {
+    out.hint =
+      'Large text dumps on marketing pages usually start with a visually-hidden SEO block. Pass visible_only:true to read what a person sees, or a selector to read one region.';
+  }
   if (truncated) {
     const artifact = ctx.stores.artifacts.put('dom_export', Buffer.from(text, 'utf8'), {
       browserId: instance.id,
@@ -956,12 +1575,21 @@ function conditionLabel(c: WaitCondition): string {
  */
 function conditionExpression(c: WaitCondition, normalize: boolean): string {
   if (c.selector !== undefined) {
-    return `!!document.querySelector(${JSON.stringify(c.selector)})`;
+    return `(document.querySelector(${JSON.stringify(c.selector)}) ? 1 : 0)`;
   }
-  const body = `(document.body ? document.body.innerText : '')`;
-  if (!normalize) return `${body}.includes(${JSON.stringify(c.text)})`;
-  const norm = (v: string) => `${v}.replace(/\\s+/g, ' ').trim().toLowerCase()`;
-  return `${norm(body)}.includes(${norm(JSON.stringify(c.text))})`;
+  /*
+   * innerText is what a reader sees, and is the right first answer. But it is
+   * layout-dependent: a detached, still-painting or oddly-styled subtree can
+   * hold text that innerText does not report, and a wait that times out on text
+   * which is demonstrably in the DOM is worse than a slightly looser match. So
+   * fall back to textContent and say which path matched: 1 = rendered text,
+   * 2 = DOM text only.
+   */
+  const rendered = `(document.body ? document.body.innerText : '')`;
+  const raw = `(document.body ? document.body.textContent : '')`;
+  const norm = (v: string) => (normalize ? `${v}.replace(/\\s+/g, ' ').trim().toLowerCase()` : v);
+  const needle = norm(JSON.stringify(c.text));
+  return `(${norm(rendered)}.includes(${needle}) ? 1 : (${norm(raw)}.includes(${needle}) ? 2 : 0))`;
 }
 
 /**
@@ -979,20 +1607,34 @@ const NEAR_MISS_FN = `(conds) => {
       out.push({ condition: c.label, relaxed_selector: relaxed, relaxed_match_count: count });
     } else {
       const needle = String(c.text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-      const lines = ((document.body ? document.body.innerText : '') || '').split('\\n')
-        .map((l) => l.replace(/\\s+/g, ' ').trim()).filter(Boolean);
-      let best = null; let bestScore = 0;
-      const words = needle.split(' ').filter(Boolean);
-      for (const line of lines) {
-        const low = line.toLowerCase();
-        let score = 0;
-        for (const w of words) if (low.includes(w)) score++;
-        if (score > bestScore) { bestScore = score; best = line; }
-      }
+      const rendered = ((document.body ? document.body.innerText : '') || '');
+      const domText = ((document.body ? document.body.textContent : '') || '');
+      const scan = (haystack) => {
+        const lines = haystack.split('\\n').map((l) => l.replace(/\\s+/g, ' ').trim()).filter(Boolean);
+        let best = null; let bestScore = 0;
+        const words = needle.split(' ').filter(Boolean);
+        for (const line of lines) {
+          const low = line.toLowerCase();
+          let score = 0;
+          for (const w of words) if (low.includes(w)) score++;
+          if (score > bestScore) { bestScore = score; best = line; }
+        }
+        return { best: best, score: bestScore, words: words.length };
+      };
+      const primary = scan(rendered);
+      const fallback = primary.score === 0 ? scan(domText) : null;
+      const chosen = fallback && fallback.score > 0 ? fallback : primary;
       out.push({
         condition: c.label,
-        closest_text: best ? best.slice(0, 200) : null,
-        matched_words: bestScore + '/' + words.length,
+        closest_text: chosen.best ? chosen.best.slice(0, 200) : null,
+        matched_words: chosen.score + '/' + chosen.words,
+        searched: fallback && fallback.score > 0 ? 'textContent (innerText had no match)' : 'innerText',
+        ...(chosen.best ? {} : {
+          why: rendered.length === 0 && domText.length === 0
+            ? 'The document has no text at all: it is blank, or still loading.'
+            : 'No line shares a single word with the target. The text is not on this page - check the URL and the frame (page.list_frames).',
+          text_length: rendered.length,
+        }),
       });
     }
   }
@@ -1047,6 +1689,7 @@ export async function waitFor(
   const expression = `[${conditions.map((c) => conditionExpression(c, normalize)).join(',')}]`;
 
   let last: boolean[] = conditions.map(() => false);
+  let matchedVia: string[] = conditions.map(() => 'rendered_text');
   while (Date.now() < deadline) {
     try {
       const { result } = await evaluate(instance, target, {
@@ -1056,7 +1699,9 @@ export async function waitFor(
       });
       const raw = Array.isArray(result.value) ? (result.value as unknown[]) : [];
       // A "gone" condition is satisfied by the absence of its target.
-      const met = conditions.map((c, i) => (raw[i] === true) !== (c.gone === true));
+      const present = conditions.map((_, i) => Number(raw[i] ?? 0) > 0);
+      const met = conditions.map((c, i) => present[i] !== (c.gone === true));
+      matchedVia = conditions.map((_, i) => (Number(raw[i] ?? 0) === 2 ? 'dom_text' : 'rendered_text'));
       last = met;
 
       if (mode === 'any') {
@@ -1067,6 +1712,14 @@ export async function waitFor(
             target_id: target.handle,
             matched: conditionLabel(condition),
             index,
+            ...(condition.text !== undefined && condition.gone !== true
+              ? {
+                  matched_via: matchedVia[index],
+                  ...(matchedVia[index] === 'dom_text'
+                    ? { note: 'Matched textContent, not innerText: the text is in the DOM but not rendered as visible layout text.' }
+                    : {}),
+                }
+              : {}),
             waited_ms: Date.now() - startedAt,
             mode,
             ...(conditions.length > 1
@@ -1246,7 +1899,8 @@ export async function expect(
 export async function observe(
   ctx: OpsContext,
   args: PageArgs & {
-    sample: Record<string, string>;
+    sample?: Record<string, string>;
+    selector?: string;
     every_ms?: number;
     for_ms?: number;
     stop_when?: string;
@@ -1255,9 +1909,26 @@ export async function observe(
   const { instance, target } = await pageOf(ctx, args);
   const every = Math.max(args.every_ms ?? 250, 25);
   const duration = Math.min(args.for_ms ?? 10_000, 300_000);
-  const keys = Object.keys(args.sample ?? {});
+
+  /*
+   * Watching one element change over time is the common case by a wide margin -
+   * a retry counter, a status line, a progress label. Requiring the caller to
+   * write the expression for it is what pushes agents into polling by hand.
+   */
+  const sample: Record<string, string> =
+    args.sample && Object.keys(args.sample).length > 0
+      ? args.sample
+      : args.selector
+        ? {
+            text: `(() => { const el = document.querySelector(${JSON.stringify(args.selector)}); return el ? (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 300) : null; })()`,
+          }
+        : {};
+  const keys = Object.keys(sample);
   if (keys.length === 0) {
-    throw new AgentBrowserError('no_sample', 'Provide sample as {name: "js expression"} pairs.');
+    throw new AgentBrowserError(
+      'no_sample',
+      'Provide selector to watch one element, or sample as {name: "js expression"} pairs.',
+    );
   }
 
   /*
@@ -1265,7 +1936,7 @@ export async function observe(
    * row shares a timestamp instead of drifting across several round trips.
    */
   const rowExpression = `({${keys
-    .map((k) => `${JSON.stringify(k)}: (() => { try { return (${args.sample[k]}); } catch (e) { return '<error: ' + e.message + '>'; } })()`)
+    .map((k) => `${JSON.stringify(k)}: (() => { try { return (${sample[k]}); } catch (e) { return '<error: ' + e.message + '>'; } })()`)
     .join(',')}})`;
   const stopExpression = args.stop_when
     ? `(() => { try { return !!(${args.stop_when}); } catch (e) { return false; } })()`
@@ -1335,6 +2006,7 @@ export async function observe(
   return {
     target_id: target.handle,
     sampled: keys,
+    ...(args.selector ? { selector: args.selector } : {}),
     every_ms: every,
     duration_ms: Date.now() - startedAt,
     sample_count: samples.length,

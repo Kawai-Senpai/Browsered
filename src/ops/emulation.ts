@@ -36,7 +36,15 @@ const DEVICE_PRESETS: Record<string, DevicePreset> = {
     userAgent:
       'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
   },
+  // The modern SE. The 320px original is `phone-small`.
   'iphone-se': { width: 375, height: 667, deviceScaleFactor: 2, mobile: true, touch: true },
+  /*
+   * 320 is the narrowest width that still turns up in the wild - the original
+   * iPhone SE, and the effective width of several email-client webviews. It is
+   * also where layouts actually break: bugs that reproduce at 320 are routinely
+   * invisible at 390, so leaving it out of the preset list meant it got skipped.
+   */
+  'phone-small': { width: 320, height: 568, deviceScaleFactor: 2, mobile: true, touch: true },
   pixel: { width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true, touch: true },
   tablet: { width: 768, height: 1024, deviceScaleFactor: 2, mobile: true, touch: true },
   ipad: { width: 820, height: 1180, deviceScaleFactor: 2, mobile: true, touch: true },

@@ -68,6 +68,28 @@ export class ConsoleStore {
   }): string {
     const handle = mintId('log');
     if (!isOpen(this.db)) return handle;
+
+    /*
+     * The same console event can reach us twice: Runtime.consoleAPICalled and
+     * Log.entryAdded both report some browser-generated messages, and a target
+     * attached through more than one session doubles everything. Identical
+     * timestamps to the millisecond make that unambiguous - real repetition,
+     * including React StrictMode double-rendering, produces distinct times.
+     * Duplicates halve the useful window of any limited query, so they are
+     * dropped at record time rather than left for every reader to handle.
+     */
+    const duplicate = this.db
+      .prepare(
+        `SELECT log_handle FROM console_entries
+          WHERE browser_id = ? AND ts = ? AND level = ?
+            AND IFNULL(target_handle, '') = IFNULL(?, '') AND IFNULL(text, '') = IFNULL(?, '')
+          LIMIT 1`,
+      )
+      .get(entry.browserId, entry.ts, entry.level, entry.targetHandle, entry.text) as
+      | { log_handle: string }
+      | undefined;
+    if (duplicate) return duplicate.log_handle;
+
     this.db
       .prepare(
         `INSERT INTO console_entries (

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { OpsContext } from '../ops/context.js';
 import * as artifactOps from '../ops/artifact.js';
+import * as auditOps from '../ops/audit.js';
 import * as browserOps from '../ops/browser.js';
 import * as consoleOps from '../ops/console.js';
 import * as cssOps from '../ops/css.js';
@@ -81,9 +82,12 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'browser.list',
     description:
-      'List every browser the daemon owns or is attached to, with tab counts and control mode. Start here when unsure what exists. Closed browsers are listed too (their recordings stay queryable), capped by limit and identifiable by last_url.',
+      'List every browser the daemon owns or is attached to, with tab counts and control mode. Start here when unsure what exists. Closed browsers whose recordings are still queryable are counted as historical_available; pass include_historical:true to list them.',
     schema: {
-      include_historical: z.boolean().optional().describe('Default true. Set false to list only running browsers.'),
+      include_historical: z
+        .boolean()
+        .optional()
+        .describe('Default false: only running browsers. Set true to also list closed browsers that still hold recordings.'),
       limit: z.number().optional().describe('Maximum closed browsers to include. Default 10.'),
     },
     handler: op(browserOps.listInstances),
@@ -92,11 +96,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'browser.launch',
     description:
-      'Launch a new Chromium with a persistent profile. Not usually needed: any tool auto-launches a browser when none is running.',
+      'Launch a new Chromium with a persistent profile. Not usually needed: any tool auto-launches a browser when none is running. When url is given, the result reports what actually committed (landed.url, landed.title, landed.http_status) rather than echoing the request.',
     schema: {
       profile: z.string().optional().describe('Named persistent profile. Reused across runs.'),
       headless: z.boolean().optional().describe('Default false: a visible window a human can also use.'),
-      url: z.string().optional().describe('Open this URL at startup.'),
+      url: z
+        .string()
+        .optional()
+        .describe('Open this URL at startup. Launch-time navigation is racy; check landed in the result, or just use page.navigate.'),
       extensions: z.array(z.string()).optional().describe('Absolute paths to unpacked extension directories.'),
       chromium_path: z.string().optional(),
       capture_netlog: z.boolean().optional().describe('Also record Chromium NetLog (DNS, sockets, TLS).'),
@@ -118,7 +125,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'browser.status',
     description:
-      'Full state of one browser: version, targets by type, how much has been recorded, active environment overrides and fault rules.',
+      'Full state of one browser: every page target with its committed URL, title, load state and HTTP status, plus version, how much has been recorded, active environment overrides and fault rules. The cheapest way to answer "what is actually on screen right now".',
     schema: { ...browserId },
     handler: op(browserOps.status),
     readOnly: true,
@@ -196,7 +203,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'page.navigate',
-    description: 'Navigate to a URL and wait for the load state.',
+    description:
+      'Navigate to a URL and wait for the load state. Reports the committed URL, the document title and its HTTP status, so a dev server serving a different project on the expected port is visible immediately.',
     schema: {
       ...scope,
       url: z.string(),
@@ -251,6 +259,23 @@ export const TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe('Tag for this capture, e.g. "onboarding-repro". Filter later with artifact.list(label:).'),
+      timeout_ms: z
+        .number()
+        .optional()
+        .describe('Give up after this long. Default 15000; a hung capture reports what the target was doing rather than stalling.'),
+      settle: z
+        .boolean()
+        .optional()
+        .describe('Wait for running CSS animations and transitions to finish first, so entrance animations are not captured mid-flight.'),
+      settle_timeout_ms: z.number().optional().describe('Cap on the settle wait. Default 2000.'),
+      trigger_lazy_content: z
+        .boolean()
+        .optional()
+        .describe('Scroll the full page once before a full_page capture, so IntersectionObserver-driven content has rendered.'),
+      max_width: z
+        .number()
+        .optional()
+        .describe('Downscale the capture to at most this many CSS pixels wide. Cuts payload on wide or full-page shots.'),
     },
     handler: op(pageOps.screenshot),
     readOnly: true,
@@ -259,19 +284,34 @@ export const TOOLS: ToolDef[] = [
     name: 'page.snapshot',
     description:
       'Accessibility-tree snapshot of the interactive elements, each with a stable ref (eNN) usable by page.click and friends. Cheaper and more reliable than screenshots for deciding what to click.',
-    schema: { ...scope, interactive_only: z.boolean().optional(), max_nodes: z.number().optional() },
+    schema: {
+      ...scope,
+      interactive_only: z.boolean().optional(),
+      max_nodes: z.number().optional(),
+      root_selector: z
+        .string()
+        .optional()
+        .describe('Scope the walk to this subtree, e.g. "main". Keeps a large hidden SEO block from eating the whole node budget.'),
+    },
     handler: op(pageOps.snapshot),
     readOnly: true,
   },
   {
     name: 'page.click',
-    description: 'Click an element, scrolling it into view first.',
+    description:
+      'Click an element, scrolling it into view first. By default watches for a DOM reaction and reports observed_change, so "the input was dispatched" is not mistaken for "the app handled it".',
     schema: {
       ...scope,
       ...locator,
       button: z.enum(['left', 'right', 'middle']).optional(),
       click_count: z.number().optional(),
       modifiers: z.array(z.string()).optional().describe('e.g. ["Control", "Shift"].'),
+      verify: z.boolean().optional().describe('Watch for DOM mutations after the click. Default true.'),
+      verify_ms: z.number().optional().describe('How long to watch. Default 300.'),
+      retry_if_unchanged: z
+        .boolean()
+        .optional()
+        .describe('If nothing changed, retry through the element own .click(), which reaches framework handlers synthetic input can miss.'),
     },
     handler: op(pageOps.click),
   },
@@ -283,13 +323,18 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'page.type',
-    description: 'Type text into an element, with real key events so the page sees each keystroke.',
+    description:
+      'Type text into an element, with real key events so the page sees each keystroke. Newlines become Enter in textareas and contenteditables; on a single-line input they are reported as dropped rather than silently flattened. Reads the field back so landed_characters is measured, not assumed.',
     schema: {
       ...scope,
       ...locator,
       text: z.string(),
       clear: z.boolean().optional().describe('Clear the field first.'),
       delay_ms: z.number().optional(),
+      insert_text: z
+        .boolean()
+        .optional()
+        .describe('Paste in one Input.insertText instead of per-key events. Much faster and newline-safe, but the page sees no keydown/keyup.'),
       press_enter: z.boolean().optional(),
     },
     handler: op(pageOps.typeText),
@@ -302,7 +347,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'page.scroll',
-    description: 'Scroll the page or a specific scrollable element.',
+    description:
+      'Scroll the page or a specific scrollable element. If wheel dispatch stalls on a busy compositor it falls back to a programmatic scroll and says so via `via`.',
     schema: {
       ...scope,
       ...locator,
@@ -341,7 +387,16 @@ export const TOOLS: ToolDef[] = [
     name: 'page.extract_text',
     description:
       'Readable text of the page, or of one element when given a locator. Pass selector/ref to read a single panel instead of the whole page.',
-    schema: { ...scope, ...locator, max_chars: z.number().optional(), include_hidden: z.boolean().optional() },
+    schema: {
+      ...scope,
+      ...locator,
+      max_chars: z.number().optional(),
+      include_hidden: z.boolean().optional(),
+      visible_only: z
+        .boolean()
+        .optional()
+        .describe('Skip visually-hidden (sr-only, clipped, off-screen) text that innerText still reports. Use on marketing pages whose first 1500 characters are an invisible SEO block.'),
+    },
     handler: op(pageOps.extractText),
     readOnly: true,
   },
@@ -397,13 +452,32 @@ export const TOOLS: ToolDef[] = [
       ...scope,
       sample: z
         .record(z.string())
+        .optional()
         .describe('Named JS expressions to evaluate each tick, e.g. {"locked": "!!document.querySelector(\'.overlay\')"}.'),
+      selector: z
+        .string()
+        .optional()
+        .describe('Shorthand for the common case: watch this element text change over time. Use instead of sample.'),
       every_ms: z.number().optional().describe('Sampling interval. Default 250.'),
       for_ms: z.number().optional().describe('Total duration. Default 10000.'),
       stop_when: z.string().optional().describe('JS expression; sampling stops early once it is truthy.'),
     },
     handler: op(pageOps.observe),
     readOnly: true,
+  },
+  {
+    name: 'page.audit_layout',
+    description:
+      'Measure a page at several viewport widths and report what is actually broken: horizontal overflow (outermost offender only), touch targets under the minimum size, and clipped text. Answers responsive questions that a screenshot leaves to guesswork. Viewport emulation is always cleared afterwards.',
+    schema: {
+      ...scope,
+      widths: z.array(z.number()).optional().describe('CSS widths to test. Default [320, 414, 768, 1280].'),
+      height: z.number().optional().describe('Viewport height for every width. Default 800.'),
+      urls: z.array(z.string()).optional().describe('Audit these URLs in turn. Omit to audit the current page.'),
+      min_touch_target: z.number().optional().describe('Smallest acceptable interactive dimension in CSS px. Default 24.'),
+      device_scale_factor: z.number().optional(),
+    },
+    handler: op(auditOps.auditLayout),
   },
   {
     name: 'page.list_dialogs',
@@ -672,6 +746,18 @@ export const TOOLS: ToolDef[] = [
       state: z.enum(['pending', 'response', 'finished', 'failed']).optional(),
       has_body: z.boolean().optional(),
       failed_only: z.boolean().optional(),
+      exclude_domains: z
+        .array(z.string())
+        .optional()
+        .describe('Drop these hosts from the result, e.g. ["analytics.google.com"].'),
+      include_aborted: z
+        .boolean()
+        .optional()
+        .describe('Include requests the browser abandoned at navigation (net::ERR_ABORTED). Default false when failed_only is set.'),
+      fields: z
+        .array(z.string())
+        .optional()
+        .describe('Return only these fields, e.g. ["url","status","started_at"]. Entries carry ~20 fields otherwise.'),
     },
     handler: op(networkOps.listRequests),
     readOnly: true,
@@ -709,9 +795,32 @@ export const TOOLS: ToolDef[] = [
       url_contains: z.string().optional(),
       resource_type: z.string().optional(),
       failed_only: z.boolean().optional(),
-      group_by: z.enum(['domain', 'resource_type', 'status']).optional(),
+      group_by: z
+        .enum(['domain', 'resource_type', 'status', 'error'])
+        .optional()
+        .describe('"error" groups by failure classification - refused vs timed out vs blocked need different answers.'),
+      sort: z.enum(['duration', 'time']).optional().describe('Order the detail lists. Default "duration".'),
+      exclude_domains: z.array(z.string()).optional().describe('Drop these hosts entirely, e.g. analytics.'),
+      include_aborted: z
+        .boolean()
+        .optional()
+        .describe('Count requests the browser abandoned at navigation (net::ERR_ABORTED). Default false: they are benign on every SPA route change.'),
     },
     handler: op(networkOps.summarize),
+    readOnly: true,
+  },
+  {
+    name: 'network.probe',
+    description:
+      'Issue a request from inside the page and report what the page sees. Unlike curl this respects CORS, service workers, proxies and the page origin, so it faithfully answers "can this app reach its API".',
+    schema: {
+      ...scope,
+      url: z.string(),
+      method: z.string().optional(),
+      headers: z.record(z.string()).optional(),
+      timeout_ms: z.number().optional().describe('Default 10000.'),
+    },
+    handler: op(networkOps.probe),
     readOnly: true,
   },
   {
@@ -1319,7 +1428,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'device.preset',
-    description: 'Emulate a device: desktop, laptop, iphone, iphone-se, pixel, tablet, ipad. Sets viewport, DPR, touch and user agent.',
+    description: 'Emulate a device: desktop, desktop-hidpi, laptop, iphone (390), iphone-se (375, the modern SE), phone-small (320, the original SE and the width most layouts break at), pixel, tablet, ipad. Sets viewport, DPR, touch and user agent.',
     schema: { ...scope, preset: z.string(), orientation: z.enum(['portrait', 'landscape']).optional() },
     handler: op(emulationOps.devicePreset),
   },
@@ -1523,9 +1632,23 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'fault.list',
-    description: 'Active fault rules and how many times each has fired.',
+    description:
+      'Active fault rules, how many times each has fired, and the URLs they actually matched. A rule showing times_applied:0 is the usual reason "the app ignored my outage" - the glob never fired.',
     schema: { ...browserId },
     handler: op(faultOps.list),
+    readOnly: true,
+  },
+  {
+    name: 'fault.test',
+    description:
+      'Dry-run a URL glob against the traffic already recorded, without creating a rule. Returns sample matches and non-matches, and warns when the pattern would also take out the document of the page you are driving. Use before fault.abort when the pattern is not obviously right.',
+    schema: {
+      ...scope,
+      url: z.string().describe('The glob to test, e.g. "http://localhost:5000/**".'),
+      resource_types: z.array(z.string()).optional().describe('Restrict to these CDP resource types.'),
+      limit: z.number().optional().describe('Samples per bucket. Default 10.'),
+    },
+    handler: op(faultOps.test),
     readOnly: true,
   },
   {
