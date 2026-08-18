@@ -328,7 +328,7 @@ node dist/cli.js open --url https://localhost:3000
 ```
 
 Or skip the commands entirely: double-click **`launchers/AI Browser.bat`**
-(macOS and Linux: `launchers/ai-browser.sh`). It is a menu — open a browser, open
+(macOS: double-click `launchers/AI Browser.command`; Linux: `launchers/ai-browser.sh`). It is a menu — open a browser, open
 one at a URL, pick a profile, see what is running, check disk usage, clean up, or
 register with your AI client. It shows running browsers at the top, offers to
 build itself on first run, and accepts `localhost:3000` as readily as a full URL.
@@ -518,6 +518,10 @@ The vendored copy has the extension's own native-messaging/MCP export **removed*
 browserd is already the agent interface, and running two evidence pipelines would
 mean a second host process to install. Capsules are written through
 `chrome.downloads` instead, so nothing extra is required.
+
+Capsules land in `~/.agent-browser/capsules/`, not your Downloads folder:
+browserd points Chromium's download directory there at launch, so a saved
+capsule sits beside the rest of the evidence and an agent can just read it.
 
 ```bash
 npm run vendor:extension          # refresh from ../Fe-shot

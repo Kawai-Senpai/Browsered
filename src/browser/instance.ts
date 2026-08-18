@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import { CdpConnection, ROOT_SESSION } from '../cdp/connection.js';
 import { CdpSession } from '../cdp/session.js';
 import type { DebuggerPausedEvent, ScriptParsedEvent, TargetInfo } from '../cdp/types.js';
@@ -11,6 +12,7 @@ import type { Stores } from '../store/index.js';
 import { ControlDeniedError, NotFoundError } from '../util/errors.js';
 import { mintId } from '../util/ids.js';
 import { createLogger, type Logger } from '../util/logger.js';
+import { paths } from '../util/paths.js';
 import type { FaultRule } from './faults.js';
 import { killBrowserProcess, launchBrowser, type LaunchOptions } from './launcher.js';
 import { TargetManager, type ManagedTarget } from './target-manager.js';
@@ -222,6 +224,33 @@ export class BrowserInstance {
     return instance;
   }
 
+  /**
+   * Send downloads to browserd's own capsules directory.
+   *
+   * The bundled capture panel exports through chrome.downloads, so without this
+   * a capsule lands in the human's Downloads folder where no agent thinks to
+   * look. Browser.setDownloadBehavior is browser-wide and survives navigation,
+   * unlike the deprecated Page-level call.
+   *
+   * Best-effort: a browser we merely connected to may be driven by someone else
+   * who chose their own download directory, and losing the whole session over a
+   * convenience path would be a bad trade.
+   */
+  private async routeCapsuleDownloads(): Promise<void> {
+    const downloadPath = paths.capsules();
+    try {
+      mkdirSync(downloadPath, { recursive: true });
+      await this.browserSession.send('Browser.setDownloadBehavior', {
+        behavior: 'allow',
+        downloadPath,
+        eventsEnabled: false,
+      });
+      this.log.debug(`capsule downloads routed to ${downloadPath}`);
+    } catch (err) {
+      this.log.debug('Browser.setDownloadBehavior failed; downloads use the browser default', err);
+    }
+  }
+
   private async start(): Promise<void> {
     await this.connection.connect();
     this.connection.setDisconnectHandler((reason) => this.handleGone(reason));
@@ -258,6 +287,8 @@ export class BrowserInstance {
         title: target.info.title,
       });
     });
+
+    await this.routeCapsuleDownloads();
 
     await this.targets.start();
     await this.waitForFirstPage();

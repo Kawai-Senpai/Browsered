@@ -23,6 +23,15 @@ export const paths = {
   runtime: () => join(homeDir(), 'run'),
   daemonInfo: () => join(homeDir(), 'run', 'browserd.json'),
   config: () => join(homeDir(), 'config.json'),
+  /**
+   * Where the bundled capture panel saves capsules.
+   *
+   * The vendored Context Capsule writes through chrome.downloads, which without
+   * this would land in the human's Downloads folder - somewhere an agent has no
+   * reason to look. Pointing Chromium's download directory here puts capsules
+   * beside the rest of the evidence browserd already owns.
+   */
+  capsules: () => join(homeDir(), 'capsules'),
 };
 
 /**
