@@ -131,6 +131,27 @@ export class ConsoleStore {
   }): string {
     const handle = mintId('exc');
     if (!isOpen(this.db)) return handle;
+
+    /*
+     * Same double-recording as addEntry, and dropped the same way: a browser
+     * attached through more than one session (a second daemon adopting a
+     * browser opened by `browserd open`, say) reports each exception once per
+     * session. The console mirror of an exception is already deduped by
+     * addEntry, so without this the two tables disagree about how many times
+     * the page actually threw.
+     */
+    const duplicate = this.db
+      .prepare(
+        `SELECT exception_handle FROM exceptions
+          WHERE browser_id = ? AND ts = ?
+            AND IFNULL(target_handle, '') = IFNULL(?, '') AND text = ?
+          LIMIT 1`,
+      )
+      .get(entry.browserId, entry.ts, entry.targetHandle, entry.text) as
+      | { exception_handle: string }
+      | undefined;
+    if (duplicate) return duplicate.exception_handle;
+
     this.db
       .prepare(
         `INSERT INTO exceptions (

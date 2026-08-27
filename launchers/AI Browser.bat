@@ -65,12 +65,16 @@ echo     1.  Open a browser              (default profile)
 echo     2.  Open a browser at a URL
 echo     3.  Open with a named profile   (work, testing, ...)
 echo.
-echo     4.  Show running browsers
-echo     5.  Show recorded data usage
-echo     6.  Clean up recorded data
+echo     4.  Capture a bug            (bundle the last few minutes)
 echo.
-echo     7.  Register with Claude / Cursor / VS Code
-echo     8.  Check the MCP setup is working
+echo     5.  Show running browsers
+echo     6.  Stop a browser            (ends its recording)
+echo.
+echo     7.  Show recorded data usage
+echo     8.  Clean up recorded data
+echo.
+echo     9.  Register with Claude / Cursor / VS Code
+echo    10.  Check the MCP setup is working
 echo.
 echo     0.  Exit
 echo   ------------------------------------------------
@@ -86,20 +90,22 @@ if "x%CHOICE%"=="x" goto MENU
 if "%CHOICE%"=="1" goto OPEN_DEFAULT
 if "%CHOICE%"=="2" goto OPEN_URL
 if "%CHOICE%"=="3" goto OPEN_PROFILE
-if "%CHOICE%"=="4" goto LIST
-if "%CHOICE%"=="5" goto DATA
-if "%CHOICE%"=="6" goto CLEAN
-if "%CHOICE%"=="7" goto INSTALL
-if "%CHOICE%"=="8" goto VERIFY
+if "%CHOICE%"=="4" goto CAPTURE
+if "%CHOICE%"=="5" goto LIST
+if "%CHOICE%"=="6" goto STOP
+if "%CHOICE%"=="7" goto DATA
+if "%CHOICE%"=="8" goto CLEAN
+if "%CHOICE%"=="9" goto INSTALL
+if "%CHOICE%"=="10" goto VERIFY
 if "%CHOICE%"=="0" exit /b 0
 goto MENU
 
 :OPEN_DEFAULT
 cls
 echo.
-echo   Opening. Close the browser window, or press Ctrl+C here, to stop.
+echo   Opening in the background. This menu stays available.
 echo.
-node "%CLI%" open --profile default
+node "%CLI%" open --detach --profile default
 echo.
 pause
 goto MENU
@@ -115,7 +121,7 @@ echo %URL% | findstr /i "://" >nul || set "URL=http://%URL%"
 echo.
 echo   Opening %URL%
 echo.
-node "%CLI%" open --profile default --url "%URL%"
+node "%CLI%" open --detach --profile default --url "%URL%"
 echo.
 pause
 goto MENU
@@ -130,7 +136,38 @@ set "PROF="
 set /p PROF="   Profile name: "
 if "x%PROF%"=="x" goto MENU
 echo.
-node "%CLI%" open --profile "%PROF%"
+node "%CLI%" open --detach --profile "%PROF%"
+echo.
+pause
+goto MENU
+
+:CAPTURE
+cls
+echo.
+echo   Bundle what just happened into a zip you can attach to a bug.
+echo   The browser has been recording all along, so pick the window
+echo   AFTER the bug rather than before it.
+echo.
+echo     1.  Last 3 minutes
+echo     2.  Last 5 minutes
+echo     3.  Last 10 minutes
+echo     4.  Last hour
+echo.
+set "WHEN="
+set "WINDOW="
+set /p WHEN="   Choose (default 3): "
+if "x%WHEN%"=="x" set "WHEN=3"
+if "%WHEN%"=="1" set "WINDOW=3m"
+if "%WHEN%"=="2" set "WINDOW=5m"
+if "%WHEN%"=="3" set "WINDOW=10m"
+if "%WHEN%"=="4" set "WINDOW=1h"
+if "x%WINDOW%"=="x" goto MENU
+echo.
+set "NOTE="
+set /p NOTE="   What did you see? (one line, optional): "
+echo.
+node "%CLI%" capture --last %WINDOW% --note "%NOTE%"
+set "WINDOW="
 echo.
 pause
 goto MENU
@@ -139,6 +176,28 @@ goto MENU
 cls
 echo.
 node "%CLI%" list
+echo.
+pause
+goto MENU
+
+:STOP
+cls
+echo.
+node "%CLI%" list
+echo.
+set "BID="
+set /p BID="   Browser id to stop (blank = the only one): "
+echo.
+REM Plain gotos rather than a parenthesised if/else: inside a block the whole
+REM construct is parsed before it runs, which is how %BID% ends up empty.
+if "x%BID%"=="x" goto STOP_ONLY
+node "%CLI%" stop --browser "%BID%"
+goto STOP_DONE
+
+:STOP_ONLY
+node "%CLI%" stop
+
+:STOP_DONE
 echo.
 pause
 goto MENU
