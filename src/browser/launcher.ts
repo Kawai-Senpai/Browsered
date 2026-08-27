@@ -109,12 +109,28 @@ async function readDevToolsActivePort(
   const file = join(userDataDir, 'DevToolsActivePort');
   const deadline = Date.now() + timeoutMs;
   let exitInfo: string | null = null;
+  let exitCode: number | null = null;
   child.once('exit', (code, signal) => {
     exitInfo = `code=${code} signal=${signal}`;
+    exitCode = code;
   });
 
   while (Date.now() < deadline) {
     if (exitInfo) {
+      /*
+       * Exit 21 is Chromium's ProcessSingleton bailing out: another process
+       * already holds this --user-data-dir, so it hands its URLs to that
+       * instance and quits without ever opening a DevTools port. The bare exit
+       * code sends people hunting for sandbox or missing-binary problems, so
+       * the profile conflict is named explicitly. The timeout path below gives
+       * the same advice, but a locked profile exits far too fast to reach it.
+       */
+      if (exitCode === 21) {
+        throw new Error(
+          `Chromium exited immediately: another browser is already using this profile ` +
+            `(${userDataDir}). Close it, or launch with a different profile. [${exitInfo}]`,
+        );
+      }
       throw new Error(`Chromium exited before the DevTools endpoint appeared (${exitInfo})`);
     }
     if (existsSync(file)) {
