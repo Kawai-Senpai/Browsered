@@ -178,6 +178,11 @@ export class TargetManager {
 
     const parent = parentSessionId === ROOT_SESSION ? null : (this.bySession.get(parentSessionId) ?? null);
     const session = new CdpSession(this.connection, sessionId, targetInfo.targetId);
+    // Instrumentation below runs against a frozen renderer, which accepts
+    // commands but answers none of them until it resumes. Without this the
+    // enables and the resume wait on each other for a full CDP timeout each -
+    // a tab opened with target="_blank" sat blank for two minutes.
+    session.setPaused(waitingForDebugger);
     const handle = this.resolveHandle(targetInfo, sessionId, parent?.handle ?? null);
 
     const target: ManagedTarget = {
@@ -214,6 +219,8 @@ export class TargetManager {
       // Always release, even if instrumentation partly failed: a held target
       // is a hung tab from the user's point of view.
       await this.release(sessionId, waitingForDebugger);
+      // Replies are available again now that the renderer is running.
+      session.setPaused(false);
     }
   }
 

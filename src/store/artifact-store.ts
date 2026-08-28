@@ -58,6 +58,7 @@ const EXTENSION_BY_MIME: Record<string, string> = {
   'image/jpeg': '.jpg',
   'image/webp': '.webp',
   'application/x-ndjson': '.ndjson',
+  'application/zip': '.zip',
 };
 
 function safeLabel(label: string | undefined): string {

@@ -3,6 +3,7 @@ import type { OpsContext } from '../ops/context.js';
 import * as artifactOps from '../ops/artifact.js';
 import * as auditOps from '../ops/audit.js';
 import * as browserOps from '../ops/browser.js';
+import * as captureOps from '../ops/capture.js';
 import * as consoleOps from '../ops/console.js';
 import * as cssOps from '../ops/css.js';
 import * as debuggerOps from '../ops/debugger.js';
@@ -1847,6 +1848,21 @@ export const TOOLS: ToolDef[] = [
       'JSONPath query against a JSON artifact: $.data.users[?(@.status == \'disabled\')], $.a[1:5], $..name. Beats scanning a huge response by hand.',
     schema: { artifact_id: z.string(), path: z.string(), limit: z.number().optional() },
     handler: op(artifactOps.jsonQuery),
+    readOnly: true,
+  },
+  {
+    name: 'capture.bundle',
+    description:
+      'Bundle a time slice of the recording into a single zip: network HAR with bodies, console NDJSON, runnable curls, navigations and a summary.md. The window is chosen after the bug, so "capture the last 10 minutes" works without arming anything first. Credentials are masked unless redact:false.',
+    schema: {
+      ...browserId,
+      ...timeWindow,
+      include_bodies: z.boolean().optional(),
+      redact: z.boolean().optional().describe('Mask credentials in headers, cookies and URLs. Default true.'),
+      note: z.string().optional().describe('What the tester saw. Goes in summary.md.'),
+      save_path: z.string().optional(),
+    },
+    handler: op(captureOps.bundle),
     readOnly: true,
   },
   {
