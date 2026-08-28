@@ -54,6 +54,8 @@ response body, the console error, the stack trace, and the exact source line.
 | **Profiling** | CPU sampling, JS coverage, traces streamed to disk, heap snapshots with **constructor-level diffing** for leak hunting, process/CPU info. |
 | **Simulation** | A controlled clock, timezone, CPU throttling, network conditions, device emulation, geolocation, vision deficiencies, and fault injection. |
 | **Repeat** | Restore a session from an export instead of replaying its login, and save parameterised workflows that replay a real sequence with different values, each step asserting it landed. |
+| **Self-documenting** | `guide.search` finds the right tool from a plain description of the problem; `guide.tool` gives the long write-up with caveats; `guide.topic` covers the architecture, the traps, and where this daemon is installed. |
+| **Skeletons** | `skeleton.capture` measures the real UI at several widths and emits a pixel-accurate loading placeholder as HTML, CSS or a React/Vue/Svelte component. |
 | **Handover** | `browser.reveal` puts a headless session on screen for the human in one call, and control modes arbitrate who drives. |
 
 ### The bits people don't expect
@@ -592,6 +594,122 @@ a password manager for anything that matters.
 Prefer `storage.export` / `storage.import` where it works: restoring a session
 cookie needs no stored password at all.
 
+## It documents itself
+
+Two hundred tools is more than any model will hold in context from one-line
+blurbs, and the README is not in the session. So the docs are a tool family.
+
+```
+guide.search { "query": "my click did nothing" }      # -> page.click, and why
+guide.tool   { "name": "page.click" }                 # the long version
+guide.topic  { "name": "install" }                    # where this daemon lives
+guide.list   { "family": "network" }                  # browse
+```
+
+`guide.tool` merges three sources: the **live registration** (name, blurb,
+mutating flag, and every argument with its type, whether it is required and its
+accepted enum values, read from the same zod schema the server validates
+against), **family notes** that apply to every sibling tool, and hand-written
+notes for the tools that carry a trap: when to reach for it, how it works
+underneath, the caveats, worked examples, related tools.
+
+Because the arguments come from the schema rather than from prose, the guide
+cannot drift. A tool added tomorrow is documented tomorrow, and
+`tests/guide-check.mjs` asserts exactly that by comparing the guide's output
+against the live tool list rather than against a fixture.
+
+`guide.search` ranks over names, summaries, argument descriptions, notes and
+topics, with filters (`family`, `mutating`) and sorts (`relevance`, `name`,
+`family`). A near miss resolves (`audit_layout` finds `page.audit_layout`) and a
+typo suggests (`page.clik` offers `page.click`).
+
+The topics are the material that is about the system rather than about one tool:
+
+| Topic | Covers |
+|---|---|
+| `start` | What it is, and the order to do things in |
+| `architecture` | Process model, recording pipeline, storage, layer by layer |
+| `install` | **Live** paths for this daemon, the update procedure, and why a tool "vanishes" after an update |
+| `recording` | Why there is no start button, and how to query the past |
+| `artifacts` | How large payloads stay out of your context |
+| `control` | Sharing the browser with a human |
+| `traps` | The failures that look like something else |
+| `repeat` | Session restore, workflows, sealed credentials |
+
+`install` is computed at call time, not written down: it reports this package's
+root and version, the built entry point and its build time, the Node version,
+the daemon home, and which Chromium was resolved and from where.
+
+---
+
+## Skeleton screens measured from the real UI
+
+A loading placeholder is only convincing when its boxes sit where the real content
+will, and nobody can hand-tune that across three breakpoints. The browser already
+knows the answer, so `skeleton.*` measures it.
+
+```
+skeleton.capture { "name": "feed", "selector": "#feed", "widths": [375, 768, 1280] }
+skeleton.preview { "name": "feed" }        # draw it over the live page, then screenshot
+skeleton.emit    { "name": "feed", "format": "react" }
+```
+
+Mark the elements you want placeholders for with `data-skeleton="name"`, or point
+`selector` at a container and let it decompose the layout automatically. The
+extraction rules follow [boneyard](https://github.com/0xGF/boneyard)'s, because each
+one encodes a failure it hit first:
+
+- **Leaves become bones**, containers are walked through. A skeleton of *every*
+  element draws over the card, then its header, then the header's text, and reads
+  as one grey slab.
+- **A container that paints a surface** (a background, an image, or a visible
+  border on a rounded element — a white card is still a card) becomes a *lighter*
+  bone drawn underneath its children, so the result reads as a card holding rows.
+- **Shapes survive.** `border-radius: 50%` on a square is a circle and stays one at
+  any width; `9999px` on a rectangle is a pill; asymmetric corners are kept as a
+  four-corner value. Table cells get no radius, since they inherit one they never paint.
+- **`exclude_selectors` / `exclude_tags`** drop a subtree entirely, for icons and
+  chrome you do not want represented.
+
+Two places it goes further:
+
+- **Wrapped text is split per visual line**, so a paragraph becomes stacked bars
+  rather than one tall block. That is what a hand-made skeleton looks like.
+- **Bones are keyed by DOM position and one capture spans every width.** A card that
+  is `display: none` below 700px is recorded as *absent at 375px*, not as a missing
+  slot that shifts every later bone. boneyard stores an independent snapshot per
+  breakpoint and picks one at runtime; keying by DOM path lets the output be plain
+  CSS that needs no runtime at all.
+
+`emit` produces `html`, `css`, `react`, `vue`, `svelte` or raw `json`, always with a
+`prefers-reduced-motion` guard. `preview` renders into a shadow root outside the app
+tree, so page CSS cannot restyle the bones and the bones cannot restyle the page;
+`page.screenshot` still captures it, which is the fastest way to see whether the
+placeholder really lines up. Captures live under `~/.agent-browser/skeletons/` and
+are stored as artifacts. Re-capturing at fewer widths merges with the previous
+capture rather than silently dropping the widths you did not measure.
+
+Three traps handled for you, each found by measuring a real page rather than by
+reasoning about it:
+
+- **Mobile emulation lies about width.** A page with no `<meta name="viewport">` gets
+  a 980px *layout* viewport under mobile emulation, so its media queries evaluate at
+  980 while the window reports 375 and every measurement describes the desktop layout
+  at a narrow scale. Capture emulates the width without mobile mode unless you pass
+  `mobile: true`.
+- **Breakpoints must ask the container, not the viewport.** The geometry is relative
+  to the capture root, and those are different numbers: on Hacker News the root was
+  796px inside a 764px viewport, so media queries picked the 375px layout and the
+  placeholder rendered 1200px too tall. The output uses `@container` queries;
+  `breakpoints: "media"` is available for browsers older than Chrome 105 / Safari 16.
+- **Breakpoint at-rules add no specificity.** The shared `.p__in > i` rule is
+  `(0,1,1)` and a bare `.p__bN` override is `(0,1,0)`, so every breakpoint rule lost
+  the cascade and the base layout kept painting. Per-bone rules are emitted as
+  `.p__in > i.p__bN`. The test suite asserts this from the *computed style* of a
+  rendered overlay, because reading the stylesheet cannot see it.
+
+---
+
 ## Two design rules
 
 ### 1. Record first, query later
@@ -633,7 +751,7 @@ Every mutating tool checks this — including the raw `cdp.send` escape hatch.
 
 ## The tool surface
 
-192 tools. `node dist/cli.js --tools` lists them all.
+203 tools. `node dist/cli.js --tools` lists them all, and `guide.list` explains them from inside the session.
 
 ```
 browser.*      list, launch, connect, status, list_targets, set_control_mode, reveal, close
@@ -647,6 +765,8 @@ network.*      list_requests, get_request, get_body, summarize, search_bodies,
                list_websockets, ws_messages, export_har, simulate, clear
 storage.*      local/session, cookies, indexeddb, caches, usage, export, import
 workflow.*     save, run, list, show, delete
+skeleton.*     capture, emit, preview, list, show, delete
+guide.*        search, tool, topic, list  (browserd's own documentation)
 credentials.*  save, login, list, delete  (use-but-never-read)
 debugger.*     enable, breakpoints, pause, resume, step, call_frames,
                evaluate_on_frame, inspect_object, wait_for_pause
@@ -667,7 +787,7 @@ cdp.send       escape hatch to any raw CDP method
 ## Testing
 
 ```bash
-npm test                      # build + live MCP suite + HTTP suite + session/workflow suite
+npm test                      # build + live MCP suite + HTTP suite + session/workflow suite + skeletons + guide
 npm run test:live             # 136 checks: real MCP client, real Chromium, local fixture
 npm run test:live:headed      # same, with a visible window
 npm run test:deep             # 35 checks against a real public site
@@ -675,6 +795,8 @@ npm run test:extension        # 7 checks: the bundled panel in a real browser
 npm run test:discovery        # 9 checks: cross-process discovery and late attach
 npm run test:http             # Streamable HTTP transport + origin guard
 npm run test:session          # 32 checks: session restore, workflow replay, handover, credentials
+npm run test:skeleton         # 32 checks: skeleton capture, emit and preview
+npm run test:guide            # 24 checks: the built-in documentation, against the live tool list
 npm run test:real             # headed narrated walkthrough on live sites
 ```
 
@@ -747,6 +869,7 @@ Everything the daemon records goes to `~/.agent-browser` (override with
 | `blobs/` | Request/response bodies, content-addressed by sha256 | traffic recorded |
 | `artifacts/` | Screenshots, HARs, traces, heap snapshots, exports | tools called |
 | `profiles/` | Chromium user-data dirs — **cookies and session tokens** | browsers launched |
+| `skeletons/` | Captured `.bones.json` layouts | `skeleton.capture` calls |
 | `logs/` | `browserd.log` | uptime |
 
 Bodies and snapshots live outside SQLite, so the database stays small even after

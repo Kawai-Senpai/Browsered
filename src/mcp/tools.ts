@@ -10,11 +10,13 @@ import * as debuggerOps from '../ops/debugger.js';
 import * as domOps from '../ops/dom.js';
 import * as emulationOps from '../ops/emulation.js';
 import * as faultOps from '../ops/faults.js';
+import * as guideOps from '../ops/guide.js';
 import * as inspectorOps from '../ops/inspector.js';
 import * as jsOps from '../ops/js.js';
 import * as networkOps from '../ops/network.js';
 import * as pageOps from '../ops/page.js';
 import * as profilerOps from '../ops/profiler.js';
+import * as skeletonOps from '../ops/skeleton.js';
 import * as storageOps from '../ops/storage.js';
 import * as workflowOps from '../ops/workflow.js';
 import * as credentialOps from '../ops/credentials.js';
@@ -1067,6 +1069,166 @@ export const TOOLS: ToolDef[] = [
     description: 'Delete a saved workflow.',
     schema: { name: z.string() },
     handler: op(workflowOps.deleteWorkflow),
+  },
+  {
+    name: 'guide.search',
+    description:
+      'Search browserd\'s own documentation when you know the problem but not the tool. Ranks over tool names, summaries, argument descriptions, hand-written notes and long-form topics. Filter by family or by whether a tool mutates the page, sort by relevance, name or family, and pass full:true to expand every hit into its complete write-up.',
+    schema: {
+      query: z.string().describe('What you are trying to do, in plain words.'),
+      family: z.string().optional().describe('Restrict to one tool family, e.g. "network".'),
+      mutating: z.boolean().optional().describe('true for tools that change the page, false for read-only ones.'),
+      kind: z.enum(['tools', 'topics', 'all']).optional().describe('Default "all".'),
+      sort: z.enum(['relevance', 'name', 'family']).optional().describe('Default "relevance".'),
+      limit: z.number().optional().describe('Max results. Default 15.'),
+      full: z.boolean().optional().describe('Expand each hit into the full guide.tool write-up.'),
+    },
+    handler: op(guideOps.guideSearch),
+    readOnly: true,
+  },
+  {
+    name: 'guide.tool',
+    description:
+      'The long guide to one tool: what it is for, how it works underneath, every argument with its type and meaning read from the live registration, the caveats that cost a session, worked examples and related tools. Accurate by construction, because the arguments come from the same schema the server validates against.',
+    schema: { name: z.string().describe('Tool name, e.g. "page.click". A near miss is resolved where it is unambiguous.') },
+    handler: op(guideOps.guideTool),
+    readOnly: true,
+  },
+  {
+    name: 'guide.topic',
+    description:
+      'Long-form background on the system rather than on one tool: start, architecture (how it works under the hood), install (where this daemon lives and how to update it, with live paths), recording, artifacts, control, traps, repeat.',
+    schema: { name: z.string().describe('Topic name. guide.list shows them all.') },
+    handler: op(guideOps.guideTopic),
+    readOnly: true,
+  },
+  {
+    name: 'guide.list',
+    description:
+      'The index: every tool family with its size, how many of its tools mutate, and its family-wide notes, plus every documentation topic. Pass family to list that family\'s tools instead.',
+    schema: {
+      family: z.string().optional().describe('List the tools in this family instead of the family index.'),
+      kind: z.enum(['tools', 'topics', 'all']).optional().describe('Default "all".'),
+    },
+    handler: op(guideOps.guideList),
+    readOnly: true,
+  },
+  {
+    name: 'skeleton.capture',
+    description:
+      'Measure the real UI at several widths and save a skeleton (bones) file: the exact boxes a loading placeholder should draw. Elements carrying the marker attribute (default data-skeleton) are used when present; otherwise the layout under `selector` is decomposed automatically - wrapped text into one bone per visual line, media and controls into their own boxes, and any container that paints a background or a rounded border into a lighter surface bone drawn underneath its children. Circles, pills and asymmetric corners are preserved as such. Bones are matched across widths by DOM position, so an element that only exists on desktop is recorded as absent on mobile rather than shifting the rest. Viewport emulation is always cleared afterwards.',
+    schema: {
+      ...scope,
+      name: z.string().describe('Name to save the skeleton under; also its filename.'),
+      url: z.string().optional().describe('Navigate here first. Omit to measure the current page.'),
+      selector: z.string().optional().describe('Root to measure. Default body. Narrow this to skeleton one component.'),
+      marker: z.string().optional().describe('Attribute marking elements to measure. Default "data-skeleton".'),
+      widths: z.array(z.number()).optional().describe('CSS widths to capture. Default [375, 768, 1280].'),
+      height: z.number().optional().describe('Viewport height for every width. Default 900.'),
+      min_size: z.number().optional().describe('Ignore boxes smaller than this in CSS px. Default 1, which keeps hairline dividers.'),
+      max_bones: z.number().optional().describe('Cap on bones per capture. Default 400.'),
+      max_lines: z.number().optional().describe('Cap on line bones per text run. Default 12.'),
+      containers: z
+        .boolean()
+        .optional()
+        .describe(
+          'Emit a lighter surface bone for containers that paint a background, image or rounded border, drawn underneath their children so a card reads as a card. Default true.',
+        ),
+      capture_rounded_borders: z
+        .boolean()
+        .optional()
+        .describe('Treat a rounded element with a visible border as a surface even when its background is white or transparent. Default true.'),
+      leaf_tags: z
+        .array(z.string())
+        .optional()
+        .describe('Extra tags to capture as a bone when they have no children. Added to p, h1-h6, li, td, th.'),
+      exclude_tags: z.array(z.string()).optional().describe('Tags to skip entirely, with their whole subtree, e.g. ["nav","footer"].'),
+      exclude_selectors: z
+        .array(z.string())
+        .optional()
+        .describe('CSS selectors to skip entirely, with their subtrees, e.g. [".icon","[data-no-skeleton]"]. An invalid selector is ignored rather than failing the capture.'),
+      default_radius: z.number().optional().describe('Corner radius in px for bones whose element has none. Default 8.'),
+      replace: z
+        .boolean()
+        .optional()
+        .describe('Discard widths from an earlier capture of this name instead of merging them. By default re-capturing at one width keeps the others.'),
+      device_scale_factor: z.number().optional(),
+      mobile: z
+        .boolean()
+        .optional()
+        .describe(
+          'Emulate a mobile device as well as the width. Off by default: on a page without a <meta name="viewport"> it forces a 980px layout viewport, so the media queries evaluate at the wrong width and the capture describes the desktop layout.',
+        ),
+      save_path: z.string().optional().describe('Also write the .bones.json here.'),
+      include_bones: z.boolean().optional().describe('Return every bone inline. Off by default: the summary is usually enough.'),
+    },
+    handler: op(skeletonOps.captureSkeleton),
+  },
+  {
+    name: 'skeleton.emit',
+    description:
+      'Turn a captured skeleton into ready-to-paste source: html, css, react, vue, svelte, or the raw json. Output is mobile-first CSS - the narrowest captured width is the base rule and wider ones are min-width overrides - with horizontal geometry in percentages so it stretches between breakpoints. Honours prefers-reduced-motion.',
+    schema: {
+      name: z.string(),
+      format: z.enum(['html', 'css', 'react', 'vue', 'svelte', 'json']).optional().describe('Default "html".'),
+      animation: z.enum(['pulse', 'shimmer', 'solid']).optional().describe('Default "shimmer".'),
+      color: z.string().optional().describe('Bone fill. Default a theme-neutral translucent grey.'),
+      highlight: z.string().optional().describe('Shimmer sweep colour.'),
+      container_color: z.string().optional().describe('Surface fill for container bones. Defaults to the bone colour at lower opacity.'),
+      class_prefix: z.string().optional().describe('CSS class prefix. Default skeleton-<name>.'),
+      component: z.string().optional().describe('Component name for react/vue/svelte output.'),
+      breakpoints: z
+        .enum(['container', 'media'])
+        .optional()
+        .describe(
+          'What the breakpoints ask about. "container" (default) uses @container queries keyed on the width of the skeleton itself, which is what its geometry is relative to. "media" uses viewport @media queries: only correct when the skeleton fills the viewport, but needed for browsers older than Chrome 105 / Safari 16 / Firefox 110.',
+        ),
+      save_path: z.string().optional().describe('Also write the generated source here.'),
+    },
+    handler: op(skeletonOps.emitSkeleton),
+    readOnly: true,
+  },
+  {
+    name: 'skeleton.preview',
+    description:
+      'Draw a captured skeleton over the live page, anchored to the element it was measured from, so you can screenshot it and see whether the placeholder actually matches. The overlay lives in a shadow root outside the app tree, so page CSS cannot restyle it and it cannot restyle the page. Call with remove:true to take it down.',
+    schema: {
+      ...scope,
+      name: z.string(),
+      selector: z.string().optional().describe('Anchor element. Defaults to the selector the skeleton was captured from.'),
+      animation: z.enum(['pulse', 'shimmer', 'solid']).optional(),
+      color: z.string().optional(),
+      highlight: z.string().optional(),
+      container_color: z.string().optional(),
+      breakpoints: z.enum(['container', 'media']).optional().describe('Default "container". See skeleton.emit.'),
+      remove: z.boolean().optional().describe('Remove the overlay instead of drawing one.'),
+    },
+    handler: op(skeletonOps.previewSkeleton),
+  },
+  {
+    name: 'skeleton.list',
+    description: 'Captured skeletons, with their widths and bone counts.',
+    schema: {},
+    handler: op(skeletonOps.listSkeletons),
+    readOnly: true,
+  },
+  {
+    name: 'skeleton.show',
+    description:
+      'The bones of one skeleton. Pass width to get flat rectangles for the nearest captured width instead of the per-width map.',
+    schema: {
+      name: z.string(),
+      width: z.number().optional().describe('Return rectangles for the captured width nearest this one.'),
+      limit: z.number().optional().describe('Max bones returned. Default 100.'),
+    },
+    handler: op(skeletonOps.showSkeleton),
+    readOnly: true,
+  },
+  {
+    name: 'skeleton.delete',
+    description: 'Delete a captured skeleton.',
+    schema: { name: z.string() },
+    handler: op(skeletonOps.deleteSkeleton),
   },
   {
     name: 'storage.clear',

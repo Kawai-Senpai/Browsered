@@ -5,6 +5,7 @@ import { createLogger } from '../util/logger.js';
 import { z } from 'zod';
 import { TOOLS } from './tools.js';
 import { setToolInvoker } from '../ops/workflow.js';
+import { setToolCatalog } from '../ops/guide.js';
 
 const log = createLogger('mcp');
 
@@ -106,6 +107,17 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'fault.replace_response(url, status, body, headers) synthesises any response - ' +
         '502, 404, 201, a malformed payload - and count:N limits it to the next N ' +
         'matches so the retry succeeds. The real server never sees the request.\n\n' +
+        'Loading placeholders are measured, not guessed. skeleton.capture runs the page ' +
+        'at several widths and records the exact boxes the real content occupies (mark ' +
+        'elements with data-skeleton, or let it decompose a selector automatically). ' +
+        'skeleton.emit turns that into html, css or a React/Vue/Svelte component, and ' +
+        'skeleton.preview draws it over the live page so one screenshot shows whether ' +
+        'the placeholder actually lines up.\n\n' +
+        'You do not have to hold all of this. guide.search{query} finds the right tool ' +
+        'from a plain description of the problem, guide.tool{name} gives the long ' +
+        'write-up on one tool including its caveats, and guide.topic covers the system ' +
+        'itself: architecture, recording, artifacts, control modes, the traps that cost ' +
+        'a session, and where this daemon is installed and how to update it.\n\n' +
         'Mutating tools respect the control mode (browser.set_control_mode): under ' +
         '"observe" or "paused" they refuse, so a human can take the browser back. ' +
         'When a headless session needs a human - a login, a CAPTCHA, a decision - ' +
@@ -114,6 +126,10 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'survive but the live page does not, and it returns a NEW browser_id.',
     },
   );
+
+  // guide.* documents the tools that are actually registered, so it reads the
+  // same array rather than a copy that could drift from it.
+  setToolCatalog(TOOLS);
 
   // workflow.run replays saved steps through the same handlers a model calls,
   // so a replayed step behaves exactly like a direct call (validation included).
