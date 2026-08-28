@@ -232,39 +232,123 @@ export async function snapshot(
  * Restore a set of keys in one call, the counterpart to snapshot/export.
  * `clear_first` makes the resulting state exact rather than a merge.
  */
+/** Shape written by exportStorage, accepted back by importStorage. */
+interface StorageExport {
+  localStorage?: { origin?: string; items?: Record<string, string> };
+  sessionStorage?: { origin?: string; items?: Record<string, string> };
+  cookies?: unknown;
+}
+
+/**
+ * A cookie needs somewhere to belong. Exported cookies carry domain/path, but a
+ * domain-only cookie from a `localhost` export is rejected by Chromium unless a
+ * URL is reconstructed for it, so synthesise one from the domain and the secure
+ * flag when the export did not carry a usable url.
+ */
+function cookieUrlFor(c: Record<string, unknown>): string | undefined {
+  const domain = typeof c.domain === 'string' ? c.domain.replace(/^\./, '') : '';
+  if (!domain) return undefined;
+  const scheme = c.secure === true ? 'https' : 'http';
+  const path = typeof c.path === 'string' ? c.path : '/';
+  return `${scheme}://${domain}${path}`;
+}
+
 export async function importStorage(
   ctx: OpsContext,
   args: StorageArgs & {
     kind?: Kind;
-    items: Record<string, string>;
+    items?: Record<string, string>;
+    state?: StorageExport;
+    cookies?: Array<Record<string, unknown>>;
     clear_first?: boolean;
   },
 ): Promise<Record<string, unknown>> {
-  const kind = args.kind ?? 'local';
-  if (!args.items || typeof args.items !== 'object') {
-    throw new AgentBrowserError('no_items', 'Provide items as an object of key/value pairs.');
+  const hasItems = args.items && typeof args.items === 'object';
+  const hasState = args.state && typeof args.state === 'object';
+  const hasCookies = Array.isArray(args.cookies);
+  if (!hasItems && !hasState && !hasCookies) {
+    throw new AgentBrowserError(
+      'no_items',
+      'Provide `items` (key/value pairs), `cookies`, or `state` (a storage.export payload).',
+    );
   }
-  const { instance, target, storageId, origin } = await storageIdFor(ctx, args, kind);
-  instance.requireControl(`storage.${kind}.import`);
 
-  if (args.clear_first) await target.session.send('DOMStorage.clear', { storageId });
+  const out: Record<string, unknown> = {};
+  const instance = await ctx.registry.resolve(args.browser_id);
+  instance.requireControl('storage.import');
 
-  const keys = Object.keys(args.items);
-  for (const key of keys) {
-    await target.session.send('DOMStorage.setDOMStorageItem', {
-      storageId,
-      key,
-      value: String(args.items[key] ?? ''),
-    });
+  // Cookies are browser-scoped, so they restore without a page origin. Doing
+  // them first means a following navigation already carries the session.
+  const cookies: Array<Record<string, unknown>> = [
+    ...(hasCookies ? (args.cookies as Array<Record<string, unknown>>) : []),
+    ...(hasState && Array.isArray(args.state?.cookies)
+      ? (args.state.cookies as Array<Record<string, unknown>>)
+      : []),
+  ];
+  if (cookies.length > 0) {
+    const prepared: Array<Record<string, unknown>> = [];
+    const skipped: string[] = [];
+    for (const c of cookies) {
+      const name = typeof c.name === 'string' ? c.name : '';
+      if (!name) continue;
+      const url = typeof c.url === 'string' && c.url ? c.url : cookieUrlFor(c);
+      if (!url && typeof c.domain !== 'string') {
+        skipped.push(name);
+        continue;
+      }
+      prepared.push({
+        name,
+        value: String(c.value ?? ''),
+        ...(c.domain ? { domain: c.domain } : {}),
+        ...(url ? { url } : {}),
+        ...(c.path ? { path: c.path } : {}),
+        ...(c.secure === undefined ? {} : { secure: c.secure }),
+        ...(c.httpOnly === undefined ? {} : { httpOnly: c.httpOnly }),
+        ...(c.http_only === undefined ? {} : { httpOnly: c.http_only }),
+        ...(c.sameSite ? { sameSite: c.sameSite } : {}),
+        // A session cookie has no expiry; forwarding a null would pin it to 1970.
+        ...(typeof c.expires === 'number' && c.expires > 0 ? { expires: c.expires } : {}),
+      });
+    }
+    if (prepared.length > 0) {
+      await instance.browserSession.send('Storage.setCookies', { cookies: prepared });
+    }
+    out.cookies_imported = prepared.length;
+    if (skipped.length > 0) out.cookies_skipped = skipped;
   }
-  return {
-    target_id: target.handle,
-    kind,
-    origin,
-    imported: keys.length,
-    keys,
-    cleared_first: args.clear_first === true,
-  };
+
+  // DOM storage is origin-scoped and needs a real page, so it is only touched
+  // when there is something to write.
+  const stores: Array<{ kind: Kind; items: Record<string, string> }> = [];
+  if (hasItems) stores.push({ kind: args.kind ?? 'local', items: args.items as Record<string, string> });
+  if (hasState) {
+    if (args.state?.localStorage?.items) stores.push({ kind: 'local', items: args.state.localStorage.items });
+    if (args.state?.sessionStorage?.items) stores.push({ kind: 'session', items: args.state.sessionStorage.items });
+  }
+
+  const written: Record<string, string[]> = {};
+  for (const store of stores) {
+    const { target, storageId, origin } = await storageIdFor(ctx, args, store.kind);
+    if (args.clear_first) await target.session.send('DOMStorage.clear', { storageId });
+    const keys = Object.keys(store.items);
+    for (const key of keys) {
+      await target.session.send('DOMStorage.setDOMStorageItem', {
+        storageId,
+        key,
+        value: String(store.items[key] ?? ''),
+      });
+    }
+    written[store.kind] = keys;
+    out.origin = origin;
+    out.target_id = target.handle;
+  }
+
+  if (stores.length > 0) {
+    out.imported = Object.values(written).reduce((n, k) => n + k.length, 0);
+    out.keys = written;
+    out.cleared_first = args.clear_first === true;
+  }
+  return out;
 }
 
 export async function exportStorage(

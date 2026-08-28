@@ -296,6 +296,7 @@ export async function status(
     status: instance.status,
     control_mode: instance.controlMode,
     managed: instance.managed,
+    headless: instance.headless,
     pid: instance.pid,
     executable: instance.executable,
     ws_endpoint: instance.wsEndpoint,
@@ -378,6 +379,126 @@ export async function setControlMode(
       agent: 'Agent owns input.',
       paused: 'Agent is frozen; reads still work.',
     }[args.mode],
+  };
+}
+
+/**
+ * Hand a headless session to the human.
+ *
+ * Chromium decides headless at process start (`--headless=new`), so there is no
+ * runtime switch: the only way to produce a window is to relaunch. The profile
+ * directory is what carries the session across, which means cookies, localStorage
+ * and logins survive but the live page does not. That distinction is reported
+ * rather than glossed over, because "your login is still there" and "the DOM you
+ * were looking at is still there" are different promises and only the first holds.
+ */
+export async function reveal(
+  ctx: OpsContext,
+  args: {
+    browser_id?: string;
+    url?: string;
+    control_mode?: 'observe' | 'shared' | 'agent' | 'paused';
+    window_size?: { width: number; height: number };
+  },
+): Promise<Record<string, unknown>> {
+  const instance = await ctx.registry.resolve(args.browser_id);
+
+  if (!instance.managed) {
+    throw new AgentBrowserError(
+      'not_managed',
+      'This browser was started elsewhere and is only attached to, so the daemon cannot relaunch it. ' +
+        'Reveal it from wherever it was launched.',
+    );
+  }
+
+  // Carry the open tabs over. Internal pages would come back as dead tabs in the
+  // new window, so only real navigable URLs are restored.
+  const openUrls = instance.targets
+    .listPages()
+    .map((p) => p.info.url)
+    .filter((u) => typeof u === 'string' && /^https?:/i.test(u));
+  const urls = args.url ? [args.url] : openUrls;
+
+  const wasHeadless = instance.headless;
+  const profile = instance.profile;
+  const extensions = instance.extensions;
+
+  // headless === false means a window is already on screen; relaunching would
+  // throw away the live page for nothing. null (attached) never reaches here.
+  if (wasHeadless === false) {
+    if (args.control_mode) instance.setControlMode(args.control_mode);
+    return {
+      browser_id: instance.id,
+      revealed: false,
+      already_headed: true,
+      profile,
+      control_mode: instance.controlMode,
+      tabs: instance.targets.listPages().length,
+      note: 'This browser already has a window; nothing was relaunched.',
+    };
+  }
+
+  await instance.close();
+
+  /*
+   * close() resolves once the kill has been *signalled*, not once Chromium has
+   * finished unwinding, and the profile's SingletonLock outlives the signal by a
+   * short and load-dependent margin. Relaunching straight away therefore fails
+   * intermittently with "another browser is already using this profile" - the
+   * kind of race that passes in isolation and breaks under a full test run. Retry
+   * briefly rather than surfacing a collision with the process we just killed.
+   */
+  const launchOptions = {
+    profile,
+    headless: false,
+    ...(extensions.length > 0 ? { extensions } : {}),
+    ...(args.window_size ? { windowSize: args.window_size } : {}),
+    ...(urls.length > 0 ? { urls } : {}),
+  };
+
+  let relaunched;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      relaunched = await ctx.registry.launch(launchOptions);
+      break;
+    } catch (err) {
+      lastError = err;
+      // Only the profile-lock collision is transient; anything else is a real
+      // failure and retrying it would just delay the report.
+      if (!/already using this profile/i.test((err as Error).message)) throw err;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  if (!relaunched) {
+    throw new AgentBrowserError(
+      'reveal_failed',
+      `The headless browser was closed, but the headed relaunch could not take the profile: ` +
+        `${(lastError as Error)?.message ?? 'unknown error'}. ` +
+        `Launch it yourself with browser.launch{profile:"${profile}"}.`,
+    );
+  }
+
+  if (args.control_mode) relaunched.setControlMode(args.control_mode);
+
+  const landed = urls.length > 0 ? await landedPage(ctx, relaunched) : null;
+
+  return {
+    browser_id: relaunched.id,
+    previous_browser_id: instance.id,
+    revealed: true,
+    profile,
+    control_mode: relaunched.controlMode,
+    pid: relaunched.pid,
+    user_data_dir: relaunched.userDataDir,
+    tabs: relaunched.targets.listPages().length,
+    restored_urls: urls,
+    ...(landed ? { landed } : {}),
+    carried_over: 'cookies, localStorage, sessionStorage and logins (everything held in the profile)',
+    lost: 'live page state: unsaved form input, in-memory JS state, and any DOM the agent modified',
+    note:
+      `The browser was relaunched as a new instance, so use browser_id:"${relaunched.id}" from now on. ` +
+      'Recordings from the headless session stay queryable under the previous id.',
   };
 }
 

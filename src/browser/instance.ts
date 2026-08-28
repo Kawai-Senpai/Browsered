@@ -37,6 +37,8 @@ export interface BrowserInstanceInit {
   process: ChildProcess | null;
   /** False for browsers the daemon merely attached to; those are never killed. */
   managed: boolean;
+  /** null for attached browsers: the daemon did not launch them, so it cannot know. */
+  headless: boolean | null;
   extensions: string[];
   netLogPath: string | null;
   stores: Stores;
@@ -55,6 +57,8 @@ export class BrowserInstance {
   readonly executable: string | null;
   readonly pid: number | null;
   readonly managed: boolean;
+  /** Whether this Chromium was launched without a window. null when unknown. */
+  readonly headless: boolean | null;
   readonly extensions: string[];
   readonly netLogPath: string | null;
   readonly launchedAt = Date.now();
@@ -127,6 +131,7 @@ export class BrowserInstance {
     this.userDataDir = init.userDataDir;
     this.wsEndpoint = init.wsEndpoint;
     this.executable = init.executable;
+    this.headless = init.headless;
     this.pid = init.pid;
     this.managed = init.managed;
     this.extensions = init.extensions;
@@ -177,6 +182,7 @@ export class BrowserInstance {
       pid: launched.pid,
       process: launched.process,
       managed: true,
+      headless: options.headless === true,
       extensions: launched.extensionsLoaded,
       netLogPath: launched.netLogPath,
       stores,
@@ -215,6 +221,7 @@ export class BrowserInstance {
       pid: input.pid ?? null,
       process: null,
       managed: false,
+      headless: null,
       extensions: [],
       netLogPath: null,
       stores,

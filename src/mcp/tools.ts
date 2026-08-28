@@ -15,6 +15,8 @@ import * as networkOps from '../ops/network.js';
 import * as pageOps from '../ops/page.js';
 import * as profilerOps from '../ops/profiler.js';
 import * as storageOps from '../ops/storage.js';
+import * as workflowOps from '../ops/workflow.js';
+import * as credentialOps from '../ops/credentials.js';
 import * as timeOps from '../ops/time.js';
 
 /** One MCP tool: name, blurb, argument schema, and the op it calls. */
@@ -155,6 +157,21 @@ export const TOOLS: ToolDef[] = [
       network: z.boolean().optional(),
     },
     handler: op(browserOps.resetRecording),
+  },
+  {
+    name: 'browser.reveal',
+    description:
+      'Put a headless session on screen for the human, in one call. Chromium fixes headless at process start, so this closes the browser and relaunches the same profile with a window, carrying the open tabs over. Cookies, localStorage and logins survive because they live in the profile; live page state (unsaved input, in-memory JS, agent DOM edits) does not, and the result says so. Returns a NEW browser_id.',
+    schema: {
+      ...browserId,
+      url: z.string().optional().describe('Open this instead of the tabs that were open.'),
+      control_mode: z
+        .enum(['observe', 'shared', 'agent', 'paused'])
+        .optional()
+        .describe('Set on the new window, e.g. "observe" to hand it to the human and stop touching it.'),
+      window_size: z.object({ width: z.number(), height: z.number() }).optional(),
+    },
+    handler: op(browserOps.reveal),
   },
   {
     name: 'browser.close',
@@ -935,14 +952,120 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'storage.import',
     description:
-      'Write many storage keys at once, the counterpart to storage.snapshot/export. Sets up a scenario state in one call.',
+      'Restore storage and cookies, the counterpart to storage.export. Pass a whole export payload as `state` to put a logged-in session back without replaying the login form, or `items`/`cookies` to set state piecemeal.',
     schema: {
       ...scope,
       kind: z.enum(['local', 'session']).optional(),
-      items: z.record(z.string()).describe('Key/value pairs to write.'),
+      items: z.record(z.string()).optional().describe('Key/value pairs to write into one store.'),
+      cookies: z
+        .array(z.record(z.any()))
+        .optional()
+        .describe('Cookies to restore, as returned by storage.list_cookies or storage.export.'),
+      state: z
+        .record(z.any())
+        .optional()
+        .describe('A whole storage.export payload: localStorage, sessionStorage and cookies restored together.'),
       clear_first: z.boolean().optional().describe('Clear the store first so the result is exact rather than merged.'),
     },
     handler: op(storageOps.importStorage),
+  },
+  {
+    name: 'credentials.save',
+    description:
+      'Save a login the agent can USE but never READ. The password is encrypted at rest and no tool ever returns it, so a prompt-injected agent cannot exfiltrate it. Bound to an exact origin. Intended for development and test accounts.',
+    schema: {
+      site: z.string().describe('Short name to refer to it by, e.g. "staging".'),
+      origin: z.string().describe('Exact origin it may be used on, e.g. "https://staging.example.com".'),
+      username: z.string(),
+      password: z.string().describe('Stored encrypted. Never returned by any tool.'),
+      login_url: z.string().optional().describe('Where the login form lives, if not the origin root.'),
+      fields: z.record(z.string()).optional().describe('Extra form fields by name attribute, e.g. an org or tenant.'),
+      selectors: z
+        .object({ username: z.string().optional(), password: z.string().optional(), submit: z.string().optional() })
+        .optional()
+        .describe('Override the auto-detected form selectors.'),
+      note: z.string().optional(),
+    },
+    handler: op(credentialOps.saveCredential),
+  },
+  {
+    name: 'credentials.login',
+    description:
+      'Sign in on the current page using a saved credential. The password goes straight from the vault into the field and is never exposed. Refuses if the page origin does not match the one the credential was saved for. Filling is not proof of login: confirm with page.expect.',
+    schema: {
+      ...scope,
+      site: z.string(),
+      username_selector: z.string().optional(),
+      password_selector: z.string().optional(),
+      submit_selector: z.string().optional(),
+      submit: z.boolean().optional().describe('Default true. false fills without submitting.'),
+    },
+    handler: op(credentialOps.login),
+  },
+  {
+    name: 'credentials.list',
+    description: 'Saved credentials as metadata only: site, origin, username, when saved and last used. Never includes passwords.',
+    schema: {},
+    handler: op(credentialOps.listCredentials),
+    readOnly: true,
+  },
+  {
+    name: 'credentials.delete',
+    description: 'Delete a saved credential.',
+    schema: { site: z.string() },
+    handler: op(credentialOps.deleteCredential),
+  },
+  {
+    name: 'workflow.save',
+    description:
+      'Save a named, parameterised sequence of tool calls for replay. Use {{var}} anywhere in a step argument. Snapshot refs are refused: they are only valid for the snapshot that produced them, so save a selector, xpath or text locator instead.',
+    schema: {
+      name: z.string().describe('Name to replay it by.'),
+      description: z.string().optional(),
+      vars: z.array(z.string()).optional().describe('Variable names; any {{placeholder}} found in the steps is added automatically.'),
+      steps: z
+        .array(
+          z.object({
+            tool: z.string().describe('Tool name, e.g. "page.click".'),
+            args: z.record(z.any()).optional(),
+            expect: z.boolean().optional().describe('false to skip the built-in outcome assertion for this step.'),
+          }),
+        )
+        .describe('Steps in order.'),
+    },
+    handler: op(workflowOps.saveWorkflow),
+  },
+  {
+    name: 'workflow.run',
+    description:
+      'Replay a saved workflow, substituting variables. Each step is checked against what browserd observed (landed_characters, observed_change), so a run that did nothing is reported as a failure rather than success. Unsupplied vars fall back to WORKFLOW_VAR_<NAME> in the environment, which keeps credentials out of the saved file.',
+    schema: {
+      name: z.string(),
+      vars: z.record(z.any()).optional().describe('Values for the workflow placeholders.'),
+      continue_on_error: z.boolean().optional().describe('Keep going after a failed step instead of stopping.'),
+      dry_run: z.boolean().optional().describe('Return the substituted steps without driving the browser.'),
+    },
+    handler: op(workflowOps.runWorkflow),
+  },
+  {
+    name: 'workflow.list',
+    description: 'Saved workflows, with their step counts and variables.',
+    schema: {},
+    handler: op(workflowOps.listWorkflows),
+    readOnly: true,
+  },
+  {
+    name: 'workflow.show',
+    description: 'The full saved definition of one workflow.',
+    schema: { name: z.string() },
+    handler: op(workflowOps.showWorkflow),
+    readOnly: true,
+  },
+  {
+    name: 'workflow.delete',
+    description: 'Delete a saved workflow.',
+    schema: { name: z.string() },
+    handler: op(workflowOps.deleteWorkflow),
   },
   {
     name: 'storage.clear',

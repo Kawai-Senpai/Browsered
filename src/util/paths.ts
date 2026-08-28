@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,11 +66,16 @@ const WINDOWS_CHROME_CANDIDATES = [
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 
+// Unbranded Chromium builds first: they still honour --load-extension.
+// Each app is checked in /Applications and then ~/Applications, which is where
+// per-user installs land and is easy to miss entirely.
 const MAC_CHROME_CANDIDATES = [
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-];
+  'Chromium.app/Contents/MacOS/Chromium',
+  'Brave Browser.app/Contents/MacOS/Brave Browser',
+  'Google Chrome.app/Contents/MacOS/Google Chrome',
+  'Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+  'Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+].flatMap((rel) => [join('/Applications', rel), join(homedir(), 'Applications', rel)]);
 
 const LINUX_CHROME_CANDIDATES = [
   '/usr/bin/chromium',
@@ -123,10 +128,17 @@ function playwrightChromiumCandidates(): string[] {
       process.platform === 'win32'
         ? ['chrome-win64\\chrome.exe', 'chrome-win\\chrome.exe']
         : process.platform === 'darwin'
-          ? [
-              'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
-              'chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium',
-            ]
+          ? // Native build first: on Apple Silicon an Intel chrome-mac would
+            // otherwise win and run under Rosetta.
+            process.arch === 'arm64'
+            ? [
+                'chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium',
+                'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+              ]
+            : [
+                'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+                'chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium',
+              ]
           : ['chrome-linux/chrome'];
     for (const rel of relatives) out.push(join(build.dir, rel));
   }
@@ -135,7 +147,13 @@ function playwrightChromiumCandidates(): string[] {
 
 function isExecutableFile(p: string): boolean {
   try {
-    return statSync(p).isFile();
+    if (!statSync(p).isFile()) return false;
+    // Existing but not runnable is a real case on macOS: a quarantined or
+    // half-installed .app leaves the inner binary in place without +x. Accepting
+    // it here would stop the candidate scan on a browser that cannot launch,
+    // turning a clear "no Chromium found" into an opaque spawn EACCES.
+    if (process.platform !== 'win32') accessSync(p, constants.X_OK);
+    return true;
   } catch {
     return false;
   }
@@ -156,13 +174,17 @@ export function resolveChromium(configuredPath?: string): ResolvedBrowser {
   const fromEnv = process.env.AGENTBROWSER_CHROMIUM;
   if (fromEnv) {
     if (!isExecutableFile(fromEnv)) {
-      throw new Error(`AGENTBROWSER_CHROMIUM points at a missing file: ${fromEnv}`);
+      throw new Error(
+        `AGENTBROWSER_CHROMIUM points at a missing or non-executable file: ${fromEnv}`,
+      );
     }
     return { executablePath: fromEnv, supportsExtensionFlags: true, source: 'env' };
   }
   if (configuredPath) {
     if (!isExecutableFile(configuredPath)) {
-      throw new Error(`Configured chromiumPath points at a missing file: ${configuredPath}`);
+      throw new Error(
+      `Configured chromiumPath points at a missing or non-executable file: ${configuredPath}`,
+    );
     }
     return { executablePath: configuredPath, supportsExtensionFlags: true, source: 'config' };
   }
@@ -180,7 +202,9 @@ export function resolveChromium(configuredPath?: string): ResolvedBrowser {
   for (const candidate of systemCandidates) {
     if (isExecutableFile(candidate)) {
       // Branded Chrome/Edge 137+ ignore the extension sideloading flags.
-      const branded = /chrome\.exe$|msedge|Google Chrome|google-chrome|microsoft-edge/i.test(
+      // Chrome-derived browsers that dropped --load-extension in 137. Matches the
+      // macOS spaced names ("Microsoft Edge") as well as the Linux hyphenated ones.
+      const branded = /chrome\.exe$|msedge|Google Chrome|google-chrome|Microsoft[ -]Edge|Brave/i.test(
         candidate,
       );
       return {

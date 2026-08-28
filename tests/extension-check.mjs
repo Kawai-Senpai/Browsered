@@ -172,7 +172,18 @@ try {
 } finally {
   await registry.closeAll().catch(() => {});
   stores.close();
-  if (!KEEP) rmSync(home, { recursive: true, force: true });
+  // Windows keeps a handle on the profile for a moment after Chromium exits, so
+  // an immediate rmSync throws EPERM and hides the actual result. Retry briefly.
+  if (!KEEP) {
+    for (let i = 0; i < 20; i++) {
+      try {
+        rmSync(home, { recursive: true, force: true });
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+  }
   console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
   process.exit(fail ? 1 : 0);
 }
