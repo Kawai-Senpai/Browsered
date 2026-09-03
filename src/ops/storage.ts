@@ -351,12 +351,75 @@ export async function importStorage(
   return out;
 }
 
+/** A CDP cookie, in the fields Playwright's storageState cares about. */
+interface CdpCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite?: string;
+}
+
+/**
+ * Reshape an export into the file Playwright's `storageState` option loads.
+ *
+ * browserd's own format is a diagnostic dump; Playwright's is a contract, and
+ * the two are not interchangeable - a test pointed at the dump fails with a
+ * parse error rather than an obviously wrong login. Two differences are worth
+ * knowing. Playwright groups localStorage under an `origins` array and has no
+ * place at all for sessionStorage, which it expects to be restored by an init
+ * script; and it requires sameSite to be one of three exact strings, where
+ * Chromium omits the field entirely for cookies that never set it.
+ */
+function toPlaywrightState(
+  cookies: CdpCookie[],
+  origin: string | undefined,
+  localItems: Record<string, string>,
+): Record<string, unknown> {
+  const sameSite = (value: string | undefined): string => {
+    if (value === 'Strict' || value === 'Lax' || value === 'None') return value;
+    // Chrome treats an unspecified SameSite as Lax, so say so rather than
+    // inventing None, which would make the cookie cross-site in replay.
+    return 'Lax';
+  };
+
+  return {
+    cookies: cookies.map((cookie) => ({
+      name: cookie.name,
+      value: cookie.value,
+      domain: cookie.domain,
+      path: cookie.path,
+      // Playwright spells a session cookie as -1, which is also CDP's spelling.
+      expires: typeof cookie.expires === 'number' ? cookie.expires : -1,
+      httpOnly: cookie.httpOnly === true,
+      secure: cookie.secure === true,
+      sameSite: sameSite(cookie.sameSite),
+    })),
+    origins:
+      origin && Object.keys(localItems).length > 0
+        ? [
+            {
+              origin,
+              localStorage: Object.entries(localItems).map(([name, value]) => ({ name, value })),
+            },
+          ]
+        : [],
+  };
+}
+
 export async function exportStorage(
   ctx: OpsContext,
-  args: StorageArgs & { save_path?: string },
+  args: StorageArgs & { save_path?: string; format?: 'browserd' | 'playwright' },
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   const payload: Record<string, unknown> = { url: target.info.url, captured_at: new Date().toISOString() };
+
+  let localOrigin: string | undefined;
+  let localItems: Record<string, string> = {};
+  let sessionItemCount = 0;
 
   for (const kind of ['local', 'session'] as Kind[]) {
     try {
@@ -365,30 +428,54 @@ export async function exportStorage(
         'DOMStorage.getDOMStorageItems',
         { storageId },
       );
-      payload[`${kind}Storage`] = { origin, items: Object.fromEntries(entries as Array<[string, string]>) };
+      const items = Object.fromEntries(entries as Array<[string, string]>);
+      payload[`${kind}Storage`] = { origin, items };
+      if (kind === 'local') {
+        localOrigin = origin;
+        localItems = items;
+      } else {
+        sessionItemCount = Object.keys(items).length;
+      }
     } catch (err) {
       payload[`${kind}Storage`] = { error: (err as Error).message };
     }
   }
 
+  let cookies: CdpCookie[] = [];
   try {
-    const { cookies } = await instance.browserSession.send<{ cookies: unknown[] }>('Storage.getCookies');
+    const result = await instance.browserSession.send<{ cookies: CdpCookie[] }>('Storage.getCookies');
+    cookies = result.cookies;
     payload.cookies = cookies;
   } catch (err) {
     payload.cookies = { error: (err as Error).message };
   }
 
-  const artifact = ctx.stores.artifacts.put('storage_export', Buffer.from(JSON.stringify(payload, null, 2), 'utf8'), {
+  const playwright = args.format === 'playwright';
+  const body = playwright ? toPlaywrightState(cookies, localOrigin, localItems) : payload;
+
+  const artifact = ctx.stores.artifacts.put('storage_export', Buffer.from(JSON.stringify(body, null, 2), 'utf8'), {
     browserId: instance.id,
     label: 'storage',
     mime: 'application/json',
     sourceRef: target.handle,
+    ...(playwright ? { meta: { format: 'playwright-storage-state' } } : {}),
   });
 
   const out: Record<string, unknown> = {
     target_id: target.handle,
+    format: playwright ? 'playwright' : 'browserd',
     artifact: toArtifactRef(artifact),
   };
+  if (playwright) {
+    out.cookies = cookies.length;
+    out.local_storage_keys = Object.keys(localItems).length;
+    out.usage = 'Point a test at this file with storageState, or store it as the auth state for a role.';
+    if (sessionItemCount > 0) {
+      out.warning =
+        `${sessionItemCount} sessionStorage key(s) were dropped: Playwright's storageState format has no field for ` +
+        'them. If the app keeps its session there, restore them with an init script or the test will run logged out.';
+    }
+  }
   if (args.save_path) {
     out.saved_to = ctx.stores.artifacts.exportTo(artifact.artifact_handle, args.save_path);
   }

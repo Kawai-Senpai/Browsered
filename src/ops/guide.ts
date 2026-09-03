@@ -152,6 +152,8 @@ const FAMILY_NOTES: Record<string, string> = {
   browser:
     'A browser is launched automatically the first time any tool needs one, so browser.launch is only necessary when you want specific options (headless, profile, proxy). browser_id is optional everywhere: omit it and the only running browser is used. browser.status is the cheapest orientation call in the whole server and should be your first move when anything looks wrong, because it names the committed URL, title, load state and HTTP status of every page target.',
   page: 'The action tools (click, type, press, scroll) report whether the page actually reacted, not merely whether an event was dispatched. Prefer refs from page.snapshot over text locators: text routinely resolves to a span inside the button rather than the button. When an action has more than one possible outcome, race them with page.wait_for(any_of) instead of guessing one and paying a full timeout.',
+  locator:
+    'The bridge between driving a page and writing a test about it. Everywhere else browserd addresses elements by CSS, XPath or a snapshot ref; a durable test cannot contain any of those, because they encode today\'s DOM shape. These two tools answer the question that otherwise gets guessed: which role, label, text or test id addresses this element, and how many things does that locator actually match. Ask before writing the test, not after it fails strict mode.',
   dom: 'Query before you dump. dom.summary describes the structure in a few hundred characters; dom.get_html on a modern app is tens of thousands and mostly framework noise. Selectors pierce shadow DOM.',
   css: 'css.explain_visibility is the tool people wish they had found first: it names the rule that hid your element, instead of handing you the stylesheet to read yourself.',
   js: 'js.evaluate runs inside the page, with the page\'s own module cache. A dynamic import() can return a module cached from an earlier load and silently report stale values, so pass bypass_module_cache when the answer looks impossibly old. It is a mutating tool: under observe or paused control modes it is refused.',
@@ -182,6 +184,7 @@ const FAMILY_NOTES: Record<string, string> = {
     'Emulation is sticky until reset. If a later measurement makes no sense, check environment.status before assuming the page is broken.',
   device:
     'device.preset sets viewport, scale factor, user agent and touch together. Setting only the viewport leaves the user agent saying desktop, which some apps branch on.',
+  qa: 'Hands an exploration to a test harness. qa.record_start arms a recorder that captures each mutating page action with its semantic locator resolved *before* the action runs, which is the only moment that answer is reliable. qa.evidence then reads the recording browserd was keeping anyway, so the window is chosen after the flow, once you know the question worth asking. One rule governs the family: it reports what happened and never decides what should have happened, so everything assertion-shaped comes back as a candidate with a null oracle, and qa.scenario_draft refuses to call itself ready to compile until a requirement is attached.',
 };
 
 /* ------------------------------- tool notes ------------------------------- */
@@ -225,6 +228,55 @@ const TOOL_NOTES: Record<string, ToolNote> = {
       'Refs are valid only for the snapshot that produced them. The ref map is replaced wholesale on every snapshot, so a ref kept across a reload or a re-snapshot resolves to a different element or to nothing. This is why workflow.save refuses steps carrying a ref.',
     ],
     see_also: ['page.click', 'inspector.accessibility_tree'],
+  },
+  'locator.candidates': {
+    when: 'You found an element by selector or ref and now need to write a test about it. Also whenever a locator you were about to use might match more than one thing.',
+    how: 'Resolves the element, reads its computed role and accessible name from Chrome\'s accessibility tree, and its test id, label and text from the DOM. Each candidate is then counted against the live page. When a candidate is ambiguous it retries with exact matching, then scoped to each landmark ancestor, and returns the first form that is unique.',
+    caveats: [
+      'The counts come from Chrome\'s accessibility tree, which Playwright models with its own implementation rather than sharing. Treat a count as a strong signal, not a proof; running the test is the proof.',
+      'A scope is only offered when the scope itself is unique. Checking only that the target is unique inside a landmark is the classic mistake: two matching navigations fail strict mode before the inner locator is even evaluated.',
+      'An element the accessibility tree marks ignored gets no role candidate, and that is worth reporting as a finding rather than working around - nobody using a screen reader can reach it either.',
+    ],
+    examples: ['locator.candidates {ref: "e14"}', 'locator.candidates {selector: "#submit"}'],
+    see_also: ['locator.check', 'page.snapshot', 'qa.steps'],
+  },
+  'locator.check': {
+    when: 'Before compiling a scenario written by hand or drafted from a recording. One call per target beats one compile, audit and three repeated runs.',
+    how: 'Resolves the scope first when the target carries a `within`, then counts matches using the same rules Playwright documents: substring and case-insensitive by default, whole-string and case-sensitive under exact.',
+    caveats: [
+      'ok is true only at exactly one match. Zero usually means the accessible name differs from the visible text, or the page is not in the state the step assumed.',
+      'Several matches is a real problem to fix, not a number to work around with .first().',
+    ],
+    examples: ['locator.check {target: {by: "role", role: "button", name: "Save"}}'],
+    see_also: ['locator.candidates'],
+  },
+  'qa.record_start': {
+    when: 'Immediately before driving the flow you intend to turn into a test.',
+    how: 'Arms a recorder in the MCP layer, so every tool call passes through it. Each mutating page action captures its semantic locator before the handler runs, then folds in what the handler reported afterwards - observed_change for a click, landed characters for typing.',
+    caveats: [
+      'workflow.run drives handlers directly and is not recorded. That is deliberate: a replay is not an exploration.',
+      'One recording exists at a time for the whole daemon. Starting a second discards the first and says how many steps went with it.',
+      'Network, console and exceptions are recorded continuously regardless. This only adds actions.',
+    ],
+    see_also: ['qa.steps', 'qa.evidence', 'qa.scenario_draft'],
+  },
+  'qa.evidence': {
+    when: 'After a flow, when you need to know what the application actually did - which API calls fired, what errored, where it ended up.',
+    how: 'Queries the recording browserd was already keeping, over a window you choose after the fact. First-party XHR and fetch calls are grouped by method and path into requestSeen candidates; console errors, exceptions and failed first-party requests come back as findings.',
+    caveats: [
+      'Every candidate carries a null oracle on purpose. An assertion built from observation alone passes against current behaviour whether or not that behaviour is correct, which is exactly how a bug becomes a permanently-green regression test.',
+      'First-party is inferred from the origin of the document request unless you pass one.',
+    ],
+    see_also: ['network.summarize', 'console.query', 'qa.scenario_draft'],
+  },
+  'qa.scenario_draft': {
+    when: 'The flow is recorded and you are ready to write the scenario.',
+    how: 'Replays the recorded steps into scenario shape, drops what a scenario cannot express (scrolling, steps whose locator was ambiguous) and reports each omission with its reason.',
+    caveats: [
+      'The draft never validates as it stands: assertions is empty and requirementSource is null. Those are the two things an agent must not invent, so they are left for you to supply from a requirement document.',
+      'A dropped step is a problem to fix at the source - a test id, a better locator, re-driving the flow - not one to paper over.',
+    ],
+    see_also: ['qa.steps', 'qa.evidence', 'qa.session_events'],
   },
   'page.click': {
     when: 'Any activation. Prefer it over dispatching events yourself.',

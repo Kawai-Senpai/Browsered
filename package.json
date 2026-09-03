@@ -30,8 +30,8 @@
     "install-mcp": "node scripts/install-mcp.mjs",
     "open": "node dist/cli.js open",
     "start": "node dist/cli.js",
-    "test": "npm run build && node tests/mcp-live.mjs && node tests/friction-check.mjs && node tests/http-smoke.mjs && node tests/session-workflow-check.mjs && node tests/skeleton-check.mjs && node tests/guide-check.mjs",
-    "test:all": "npm run build && node tests/mcp-live.mjs && node tests/friction-check.mjs && node tests/http-smoke.mjs && node tests/session-workflow-check.mjs && node tests/skeleton-check.mjs && node tests/guide-check.mjs && node tests/extension-check.mjs && node tests/discovery-check.mjs && node tests/deep-dive.mjs --headless",
+    "test": "npm run build && node tests/mcp-live.mjs && node tests/friction-check.mjs && node tests/http-smoke.mjs && node tests/session-workflow-check.mjs && node tests/skeleton-check.mjs && node tests/guide-check.mjs && node tests/qa-check.mjs",
+    "test:all": "npm run build && node tests/mcp-live.mjs && node tests/friction-check.mjs && node tests/http-smoke.mjs && node tests/session-workflow-check.mjs && node tests/skeleton-check.mjs && node tests/guide-check.mjs && node tests/qa-check.mjs && node tests/playwright-interop.mjs && node tests/extension-check.mjs && node tests/discovery-check.mjs && node tests/deep-dive.mjs --headless",
     "test:friction": "node tests/friction-check.mjs",
     "test:deep": "node tests/deep-dive.mjs --headless",
     "test:deep:headed": "node tests/deep-dive.mjs",
@@ -48,7 +48,9 @@
     "verify-mcp": "node scripts/verify-mcp.mjs",
     "test:session": "node tests/session-workflow-check.mjs",
     "test:skeleton": "node tests/skeleton-check.mjs",
-    "test:guide": "node tests/guide-check.mjs"
+    "test:guide": "node tests/guide-check.mjs",
+    "test:qa": "node tests/qa-check.mjs",
+    "test:interop": "node tests/playwright-interop.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -57,6 +59,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.0",
     "@types/ws": "^8.18.1",

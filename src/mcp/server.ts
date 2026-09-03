@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { TOOLS } from './tools.js';
 import { setToolInvoker } from '../ops/workflow.js';
 import { setToolCatalog } from '../ops/guide.js';
+import { afterAction, beforeAction } from '../ops/qa.js';
 
 const log = createLogger('mcp');
 
@@ -161,8 +162,18 @@ export function createMcpServer(ctx: OpsContext): McpServer {
       // The SDK validates against the schema, so args arrive already parsed.
       (async (args: Record<string, unknown>) => {
         const started = Date.now();
+        /*
+         * A QA recording, when armed, needs the semantic locator of the element
+         * as it is *before* the action: afterwards the element may have been
+         * replaced or navigated away from. This is the one place every tool
+         * call passes through, so the recorder hooks here rather than inside
+         * each page op. Note that workflow.run drives tool.handler directly and
+         * so is not recorded, which is right - a replay is not an exploration.
+         */
+        const pending = await beforeAction(ctx, tool.name, args ?? {});
         try {
           const payload = await tool.handler(ctx, args ?? {});
+          afterAction(pending, payload);
           log.debug(`${tool.name} ok in ${Date.now() - started}ms`);
           return renderResult(payload);
         } catch (err) {

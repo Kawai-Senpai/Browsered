@@ -671,6 +671,120 @@ interface SnapshotOptions extends PageArgs {
   max_nodes?: number;
   interactive_only?: boolean;
   root_selector?: string;
+  format?: 'refs' | 'aria';
+}
+
+/**
+ * Rendering Chrome's accessibility tree in Playwright's aria-snapshot dialect.
+ *
+ * The two trees are not the same shape, and the differences are not cosmetic:
+ * a snapshot carrying Chrome's own node names does not parse as an expectation
+ * at all, so the assertion fails before it compares anything. Each rule below
+ * was derived by diffing this output against `locator.ariaSnapshot()` on a
+ * fixture covering labels, landmarks, lists and named-by-reference controls.
+ *
+ * The mapping is:
+ *   - RootWebArea, generic and LabelText carry no meaning in the dialect, so
+ *     they are dropped and their children rise to their depth.
+ *   - `<form>` and `<region>` are only landmarks when they have an accessible
+ *     name; unnamed ones are dropped the same way.
+ *   - StaticText becomes `- text: ...`, unless it is simply repeating the
+ *     accessible name of the element containing it, where the dialect leaves it
+ *     out. ListMarker (the bullet) has no representation and is dropped.
+ *   - `level` appears on headings only, though Chrome also reports it on list
+ *     items.
+ */
+const ARIA_TEXT_ROLES = new Set(['StaticText', 'InlineTextBox']);
+const ARIA_TRANSPARENT_ROLES = new Set(['RootWebArea', 'generic', 'LabelText', 'none', 'presentation', '']);
+/** Landmarks that only count as landmarks once they are named. */
+const ARIA_NAME_REQUIRED_ROLES = new Set(['form', 'region']);
+const ARIA_STATE_PROPS = new Set(['checked', 'disabled', 'expanded', 'pressed', 'selected']);
+
+const normaliseText = (value: unknown): string =>
+  String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/** `[checked]` for true, `[checked=mixed]` for anything else meaningful, nothing for false. */
+function ariaStateAttrs(node: AXNode): string {
+  const attrs: string[] = [];
+  const role = String(node.role?.value ?? '');
+  for (const prop of node.properties ?? []) {
+    const value = prop.value?.value;
+    if (value === undefined || value === null) continue;
+
+    if (prop.name === 'level') {
+      // Chrome reports level on list items too; the dialect only takes it on
+      // headings, and an extra attribute makes the node unmatchable.
+      if (role === 'heading') attrs.push(`level=${String(value)}`);
+      continue;
+    }
+    if (!ARIA_STATE_PROPS.has(prop.name)) continue;
+    if (value === false || value === 'false') continue;
+    attrs.push(value === true || value === 'true' ? prop.name : `${prop.name}=${String(value)}`);
+  }
+  return attrs.map((attr) => ` [${attr}]`).join('');
+}
+
+interface AriaRender {
+  lines: string[];
+  emitted: number;
+  truncated: boolean;
+}
+
+function renderAriaSnapshot(byId: Map<string, AXNode>, rootId: string, maxNodes: number): AriaRender {
+  const out: AriaRender = { lines: [], emitted: 0, truncated: false };
+
+  /**
+   * `suppress` is the accessible name of the nearest rendered ancestor. Text
+   * inside it that merely restates that name is what the element was named
+   * from, so the dialect does not repeat it as a child.
+   */
+  const render = (nodeId: string, depth: number, suppress: string): string[] => {
+    if (out.emitted >= maxNodes) {
+      out.truncated = true;
+      return [];
+    }
+    const node = byId.get(nodeId);
+    if (!node) return [];
+
+    const role = String(node.role?.value ?? '');
+    const indent = '  '.repeat(depth);
+
+    /*
+     * An ignored node is not rendered, but its children still are. Chrome marks
+     * html and body ignored on most pages, so returning early here empties the
+     * whole snapshot - which is exactly what it did before this was fixed.
+     */
+    if (node.ignored) {
+      return (node.childIds ?? []).flatMap((childId) => render(childId, depth, suppress));
+    }
+
+    if (role === 'ListMarker') return [];
+
+    if (ARIA_TEXT_ROLES.has(role)) {
+      const text = normaliseText(node.name?.value ?? node.value?.value);
+      if (!text) return [];
+      if (suppress && suppress.includes(text)) return [];
+      out.emitted++;
+      return [`${indent}- text: ${text}`];
+    }
+
+    const name = normaliseText(node.name?.value);
+    if (ARIA_TRANSPARENT_ROLES.has(role) || (ARIA_NAME_REQUIRED_ROLES.has(role) && !name)) {
+      return (node.childIds ?? []).flatMap((childId) => render(childId, depth, suppress));
+    }
+
+    const header = `${indent}- ${role}${name ? ` ${JSON.stringify(name)}` : ''}${ariaStateAttrs(node)}`;
+    out.emitted++;
+    const children = (node.childIds ?? []).flatMap((childId) =>
+      render(childId, depth + 1, name || suppress),
+    );
+    return children.length > 0 ? [`${header}:`, ...children] : [header];
+  };
+
+  out.lines = render(rootId, 0, '');
+  return out;
 }
 
 /**
@@ -691,6 +805,7 @@ export async function snapshot(ctx: OpsContext, args: SnapshotOptions): Promise<
   const refs = new Map<string, number>();
   const lines: string[] = [];
   const maxNodes = Math.min(Math.max(args.max_nodes ?? 1500, 10), 10_000);
+  const aria = args.format === 'aria';
   let refCounter = 0;
   let emitted = 0;
   let truncated = false;
@@ -772,7 +887,18 @@ export async function snapshot(ctx: OpsContext, args: SnapshotOptions): Promise<
       rootNote = `root_selector "${args.root_selector}" resolved to ${element.description}, but that node is not in the accessibility tree (it may be aria-hidden or display:none). Snapshotting the whole document instead.`;
     }
   }
-  if (root) walk(root.nodeId, 0);
+  if (root) {
+    if (aria) {
+      // A different dialect entirely, so a separate renderer rather than a
+      // conditional threaded through the ref walk.
+      const rendered = renderAriaSnapshot(byId, root.nodeId, maxNodes);
+      lines.push(...rendered.lines);
+      emitted = rendered.emitted;
+      truncated = rendered.truncated;
+    } else {
+      walk(root.nodeId, 0);
+    }
+  }
 
   /*
    * An empty tree over a non-empty DOM is the failure that makes an agent
@@ -800,8 +926,11 @@ export async function snapshot(ctx: OpsContext, args: SnapshotOptions): Promise<
     }
   }
 
-  // Refs are only meaningful against the snapshot that produced them.
-  instance.snapshotRefs.set(target.handle, refs);
+  // Refs are only meaningful against the snapshot that produced them. An aria
+  // snapshot mints none, and must not wipe the refs a previous snapshot handed
+  // out - asking for a different view of the page should not break the handles
+  // you were about to act on.
+  if (!aria) instance.snapshotRefs.set(target.handle, refs);
 
   return {
     target_id: target.handle,
@@ -815,9 +944,24 @@ export async function snapshot(ctx: OpsContext, args: SnapshotOptions): Promise<
     ...(args.root_selector ? { root_selector: args.root_selector } : {}),
     ...(rootNote ? { root_note: rootNote } : {}),
     ...(emptyWarning ? { warning: emptyWarning } : {}),
-    ref_count: refs.size,
+    ...(aria ? {} : { ref_count: refs.size }),
+    format: aria ? 'aria' : 'refs',
     snapshot: lines.join('\n'),
-    hint: 'Pass ref="eNN" to page.click / page.type / dom.inspect. Refs expire on the next snapshot.',
+    ...(aria
+      ? {
+          hint:
+            'Playwright aria-snapshot dialect, ready for a toMatchAriaSnapshot assertion. It carries no refs, and it ' +
+            'left the existing ones alone.',
+          verify:
+            "This is Chrome's accessibility tree rendered in Playwright's dialect, not Playwright's own output. " +
+            'The dialect is checked against the real toMatchAriaSnapshot matcher by tests/playwright-interop.mjs, ' +
+            'but on one fixture: a page built from constructs it does not cover can still render differently. ' +
+            'It is also deliberately a subset, which a partial match accepts. Run the assertion once before ' +
+            'committing it.',
+        }
+      : {
+          hint: 'Pass ref="eNN" to page.click / page.type / dom.inspect. Refs expire on the next snapshot.',
+        }),
   };
 }
 

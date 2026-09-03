@@ -13,7 +13,9 @@ import * as faultOps from '../ops/faults.js';
 import * as guideOps from '../ops/guide.js';
 import * as inspectorOps from '../ops/inspector.js';
 import * as jsOps from '../ops/js.js';
+import * as locatorOps from '../ops/locator.js';
 import * as networkOps from '../ops/network.js';
+import * as qaOps from '../ops/qa.js';
 import * as pageOps from '../ops/page.js';
 import * as profilerOps from '../ops/profiler.js';
 import * as skeletonOps from '../ops/skeleton.js';
@@ -76,6 +78,32 @@ const paging = {
   offset: z.number().optional(),
   order: z.enum(['asc', 'desc']).optional(),
 };
+
+/**
+ * A locator a durable test can contain: role and accessible name, label, text
+ * or test id, optionally scoped to a landmark. Deliberately unable to express a
+ * CSS selector, an XPath or a positional index, which is what keeps a compiled
+ * test from encoding today's DOM shape.
+ */
+const semanticTarget = z.object({
+  by: z.enum(['role', 'label', 'text', 'testId']),
+  role: z.string().optional().describe('Required when by="role", e.g. "button", "link", "textbox".'),
+  name: z.string().optional().describe('Accessible name. Required when by="role".'),
+  label: z.string().optional(),
+  text: z.string().optional(),
+  testId: z.string().optional(),
+  exact: z
+    .boolean()
+    .optional()
+    .describe('Default false: case-insensitive substring. True is case-sensitive whole-string.'),
+  within: z
+    .object({
+      role: z.string().describe('Landmark or role to scope to: main, navigation, banner, contentinfo, region, form, or any target role.'),
+      name: z.string().optional(),
+    })
+    .optional()
+    .describe('Scopes the locator to a landmark, which is how a repeated name stays unambiguous without .first().'),
+});
 
 /** Cast a typed op into the uniform handler shape. */
 function op<A>(fn: (ctx: OpsContext, args: A) => Promise<Record<string, unknown>>): ToolDef['handler'] {
@@ -303,7 +331,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'page.snapshot',
     description:
-      'Accessibility-tree snapshot of the interactive elements, each with a stable ref (eNN) usable by page.click and friends. Cheaper and more reliable than screenshots for deciding what to click.',
+      'Accessibility-tree snapshot of the interactive elements, each with a stable ref (eNN) usable by page.click and friends. Cheaper and more reliable than screenshots for deciding what to click. format:"aria" instead emits Playwright\'s aria-snapshot dialect for a toMatchAriaSnapshot assertion - refless, and it leaves existing refs alone.',
     schema: {
       ...scope,
       interactive_only: z.boolean().optional(),
@@ -312,6 +340,10 @@ export const TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe('Scope the walk to this subtree, e.g. "main". Keeps a large hidden SEO block from eating the whole node budget.'),
+      format: z
+        .enum(['refs', 'aria'])
+        .optional()
+        .describe('Default "refs". "aria" is a draft for a toMatchAriaSnapshot assertion and must be run once before it is trusted.'),
     },
     handler: op(pageOps.snapshot),
     readOnly: true,
@@ -530,6 +562,32 @@ export const TOOLS: ToolDef[] = [
     description: 'Frame tree with origins and execution-context ids, so JS can be run inside a specific iframe.',
     schema: { ...scope },
     handler: op(pageOps.listFrames),
+    readOnly: true,
+  },
+
+  /* -------------------------------- locator ------------------------------- */
+  {
+    name: 'locator.candidates',
+    description:
+      'Given any element (ref, selector, xpath, text), the locators a durable test could use for it - role plus accessible name, label, text, test id - each with how many elements it actually matches right now. When a locator is ambiguous it computes the landmark scope that makes it unique, which is the honest alternative to .first(). Use this before writing a Playwright test or a scenario, not after it fails.',
+    schema: {
+      ...scope,
+      ...locator,
+      test_id_attribute: z.string().optional().describe('Default "data-testid".'),
+    },
+    handler: op(locatorOps.candidates),
+    readOnly: true,
+  },
+  {
+    name: 'locator.check',
+    description:
+      'Resolve a semantic locator against the live page and report how many elements it hits. A locator matching zero or several is far cheaper to find here than after compiling the test, running it three times and reading a strict-mode failure.',
+    schema: {
+      ...scope,
+      target: semanticTarget,
+      test_id_attribute: z.string().optional().describe('Default "data-testid".'),
+    },
+    handler: op(locatorOps.check),
     readOnly: true,
   },
 
@@ -1238,8 +1296,16 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'storage.export',
-    description: 'Dump localStorage, sessionStorage and cookies to a JSON artifact.',
-    schema: { ...scope, save_path: z.string().optional() },
+    description:
+      'Dump localStorage, sessionStorage and cookies to a JSON artifact. format:"playwright" instead emits a real Playwright storageState file, which is what a test loads to start authenticated without replaying the login form.',
+    schema: {
+      ...scope,
+      save_path: z.string().optional(),
+      format: z
+        .enum(['browserd', 'playwright'])
+        .optional()
+        .describe('Default "browserd" (diagnostic dump). "playwright" emits a loadable storageState; note it has no sessionStorage field.'),
+    },
     handler: op(storageOps.exportStorage),
     readOnly: true,
   },
@@ -2032,6 +2098,75 @@ export const TOOLS: ToolDef[] = [
     description: 'Copy an artifact to a path on the daemon host, for tooling outside this session.',
     schema: { artifact_id: z.string(), path: z.string() },
     handler: op(artifactOps.exportTo),
+    readOnly: true,
+  },
+
+  /* ----------------------------------- QA --------------------------------- */
+  {
+    name: 'qa.record_start',
+    description:
+      'Start recording the flow you are about to drive, as steps a test harness can compile. Every mutating page action is captured with its semantic locator resolved before the action runs, which is the only moment that answer is reliable. Network and console were already being recorded and are unaffected.',
+    schema: {
+      ...scope,
+      flow: z.string().describe('What is being exercised, e.g. "create a todo".'),
+    },
+    handler: op(qaOps.recordStart),
+  },
+  {
+    name: 'qa.record_stop',
+    description: 'Stop recording. The steps survive, so qa.steps and qa.scenario_draft still work afterwards.',
+    schema: {},
+    handler: op(qaOps.recordStop),
+  },
+  {
+    name: 'qa.record_status',
+    description: 'Whether a recording is active, and how much it has captured.',
+    schema: {},
+    handler: op(qaOps.recordStatus),
+    readOnly: true,
+  },
+  {
+    name: 'qa.steps',
+    description:
+      'The recorded flow as scenario steps, each with its semantic target and, where one exists, the reason it cannot be compiled as recorded. A step whose locator matches several elements is reported rather than quietly narrowed.',
+    schema: { include_problems: z.boolean().optional() },
+    handler: op(qaOps.steps),
+    readOnly: true,
+  },
+  {
+    name: 'qa.evidence',
+    description:
+      'What browserd observed during a window, shaped as things a scenario could assert: first-party XHR/fetch calls as requestSeen candidates, the navigation path, console errors, exceptions and HTTP failures. Because recording is always on, the window is chosen after the flow, once you know the question. Every candidate carries a null oracle: it says what happened, never what should have happened.',
+    schema: {
+      ...scope,
+      ...timeWindow,
+      origin: z.string().optional().describe('First-party origin. Inferred from the document request when omitted.'),
+    },
+    handler: op(qaOps.evidence),
+    readOnly: true,
+  },
+  {
+    name: 'qa.scenario_draft',
+    description:
+      'The recorded flow as a draft scenario. It is deliberately not compilable: assertions are empty and requirementSource is null, because those are the two things an agent must not invent. Candidate assertions are listed separately for a human or an agent to promote against a real requirement.',
+    schema: {
+      ...scope,
+      id: z.string().describe('Lowercase letters, numbers and hyphens, e.g. "todo-create".'),
+      name: z.string(),
+      requirement_source: z.string().optional().describe('The requirement document this flow is tested against.'),
+      start_path: z.string().optional(),
+      role: z.string().optional().describe('Auth role whose stored state the test should load.'),
+      viewport: z.string().optional(),
+    },
+    handler: op(qaOps.scenarioDraft),
+    readOnly: true,
+  },
+  {
+    name: 'qa.session_events',
+    description:
+      'The recording as an exploration event log a QA harness can ingest (Auto-QA: feed each to qa_record_event). Returned rather than written, so the harness keeps control of its own evidence directory.',
+    schema: { ...scope, ...timeWindow },
+    handler: op(qaOps.sessionEvents),
     readOnly: true,
   },
 ];

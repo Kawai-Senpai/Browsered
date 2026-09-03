@@ -56,6 +56,7 @@ response body, the console error, the stack trace, and the exact source line.
 | **Repeat** | Restore a session from an export instead of replaying its login, and save parameterised workflows that replay a real sequence with different values, each step asserting it landed. |
 | **Self-documenting** | `guide.search` finds the right tool from a plain description of the problem; `guide.tool` gives the long write-up with caveats; `guide.topic` covers the architecture, the traps, and where this daemon is installed. |
 | **Skeletons** | `skeleton.capture` measures the real UI at several widths and emits a pixel-accurate loading placeholder as HTML, CSS or a React/Vue/Svelte component. |
+| **Test handoff** | `locator.candidates` names an element the way a durable test must — role, label, text or test id — and counts what each one actually matches. `qa.*` records a driven flow as scenario steps and hands the evidence to a test harness. |
 | **Handover** | `browser.reveal` puts a headless session on screen for the human in one call, and control modes arbitrate who drives. |
 
 ### The bits people don't expect
@@ -710,6 +711,79 @@ reasoning about it:
 
 ---
 
+## Locators a test can keep, and the handoff to a test harness
+
+Everywhere else in browserd an element is addressed by CSS, XPath, visible text or a
+snapshot ref. That is right for driving a page and wrong for writing a test about it: a
+CSS selector encodes today's DOM shape, so the test breaks on a refactor that changed
+nothing a user can see. Playwright-based harnesses — [Auto-QA](https://github.com/mljunction/auto-qa)
+among them — therefore accept only user-facing locators.
+
+An agent that explores here and authors a test there has to *guess* the semantic locator,
+and only finds out whether the guess was right after compiling and running. `locator.*`
+closes that loop in the browser, where the answer is knowable.
+
+```
+locator.candidates { selector: "header nav a" }
+```
+
+```json
+{
+  "recommended": {
+    "by": "role", "role": "link", "name": "Models",
+    "within": { "role": "navigation", "name": "Primary" }
+  },
+  "candidates": [{
+    "matches": 1,
+    "compiles_to": "page.getByRole(\"navigation\", { name: \"Primary\" }).getByRole(\"link\", { name: \"Models\" })",
+    "note": "The unscoped form matched 2; scoping to the navigation landmark isolates it. This is what replaces .first(), which would weaken the assertion to \"one of these exists\"."
+  }]
+}
+```
+
+That is the whole point. The same link text sits in a header and a footer, so the obvious
+locator matches twice and fails strict mode. The usual escapes — `.first()`, `.nth(0)` —
+do not disambiguate, they just stop the complaint. Scoping to the landmark does, and
+browserd can work out *which* landmark because it can count matches in the live page.
+
+`locator.check` runs it the other way: hand it a locator and it reports what that hits
+right now, which is far cheaper than compile → audit → three repeated runs → strict-mode
+failure. It resolves the scope first, because a `within` that matches two navigations
+fails before the inner locator is ever evaluated.
+
+### Recording a flow for a harness
+
+```
+qa.record_start { flow: "create a todo" }     # then drive the page normally
+qa.steps {}                                   # -> scenario steps, semantic targets
+qa.evidence {}                                # -> what the app actually did
+qa.scenario_draft { id: "todo-create", name: "A todo can be created" }
+```
+
+Each mutating action captures its semantic locator **before** the action runs — after a
+click the element may have been replaced or navigated away from, and a locator resolved
+against the resulting page is a locator for a different element. Because network and
+console were being recorded the whole time anyway, `qa.evidence` picks its window *after*
+the flow, once you know which question is worth asking.
+
+> **browserd reports what happened. It never decides what should have happened.**
+>
+> An agent that writes assertions from observed behaviour encodes today's bugs as
+> tomorrow's permanently-green regression tests — worse than no tests, because it
+> manufactures confidence. So everything assertion-shaped comes back as a *candidate*
+> with a null oracle, and `qa.scenario_draft` returns `ready_to_compile: false` with
+> `assertions: []` and `requirementSource: null` until a requirement is attached. The
+> draft deliberately does not validate.
+
+Two artifact shapes complete the handoff: `storage.export { format: "playwright" }` emits
+a real `storageState` file, so a test starts authenticated without replaying the login
+form, and `page.snapshot { format: "aria" }` emits Playwright's aria-snapshot dialect for
+a `toMatchAriaSnapshot` assertion. The aria snapshot is a draft to verify by running it
+once — it is Chrome's accessibility tree rendered in Playwright's dialect, and the two
+engines compute roles and names independently.
+
+---
+
 ## Two design rules
 
 ### 1. Record first, query later
@@ -751,12 +825,14 @@ Every mutating tool checks this — including the raw `cdp.send` escape hatch.
 
 ## The tool surface
 
-203 tools. `node dist/cli.js --tools` lists them all, and `guide.list` explains them from inside the session.
+212 tools. `node dist/cli.js --tools` lists them all, and `guide.list` explains them from inside the session.
 
 ```
 browser.*      list, launch, connect, status, list_targets, set_control_mode, reveal, close
 page.*         navigate, screenshot, snapshot, click, type, press, scroll, extract_text,
                wait_for, highlight, dialogs, viewport, frames, tabs
+locator.*      candidates, check  (locators a durable test can contain)
+qa.*           record_start/stop/status, steps, evidence, scenario_draft, session_events
 dom.*          summary, query, inspect, get_html, set_html, set_attribute, remove, export
 css.*          computed, matched_rules, set_style, stylesheets, explain_visibility
 js.*           evaluate, list_scripts, get_source, search_source
@@ -797,6 +873,7 @@ npm run test:http             # Streamable HTTP transport + origin guard
 npm run test:session          # 32 checks: session restore, workflow replay, handover, credentials
 npm run test:skeleton         # 32 checks: skeleton capture, emit and preview
 npm run test:guide            # 24 checks: the built-in documentation, against the live tool list
+npm run test:qa               # 22 checks: semantic locators, recording, evidence, storageState
 npm run test:real             # headed narrated walkthrough on live sites
 ```
 
