@@ -54,7 +54,9 @@ response body, the console error, the stack trace, and the exact source line.
 | **Profiling** | CPU sampling, JS coverage, traces streamed to disk, heap snapshots with **constructor-level diffing** for leak hunting, process/CPU info. |
 | **Simulation** | A controlled clock, timezone, CPU throttling, network conditions, device emulation, geolocation, vision deficiencies, and fault injection. |
 | **Repeat** | Restore a session from an export instead of replaying its login, and save parameterised workflows that replay a real sequence with different values, each step asserting it landed. |
-| **Self-documenting** | `guide.search` finds the right tool from a plain description of the problem; `guide.tool` gives the long write-up with caveats; `guide.topic` covers the architecture, the traps, and where this daemon is installed. |
+| **Hidden errors** | `app.error_state` reads the errors your app is *holding* — the ones TanStack Query, SWR or Redux caught and stored as state, where `console.exceptions` structurally cannot see them. An empty console is not evidence that nothing threw. |
+| **Dead controls** | `app.diagnose_interaction` clicks a control and reports what the application did about it: handler attached, handler threw, request initiated, input consumed, guard returned early. `page.click` tells you the DOM moved; unrelated re-renders make that true for a click that did nothing. |
+| **Self-documenting** | `guide.orient` is the one-call orientation: every family, what each is for, which tool fits which situation. `guide.search` finds the right tool from a plain description of the problem; `guide.tool` gives the long write-up with caveats; `guide.topic` covers the architecture, the traps, and where this daemon is installed. |
 | **Skeletons** | `skeleton.capture` measures the real UI at several widths and emits a pixel-accurate loading placeholder as HTML, CSS or a React/Vue/Svelte component. |
 | **Test handoff** | `locator.candidates` names an element the way a durable test must — role, label, text or test id — and counts what each one actually matches. `qa.*` records a driven flow as scenario steps and hands the evidence to a test harness. |
 | **Handover** | `browser.reveal` puts a headless session on screen for the human in one call, and control modes arbitrate who drives. |
@@ -80,6 +82,23 @@ fault.delay({ url: "**/api/save", delay: "20s" })
 fault.replace_response({ url: "**/api/user", status: 500, body: {...} })
 fault.drop_next({ url: "**/api/payment", count: 1 })
 ```
+
+**The error the console never shows.** A button does nothing. `console.exceptions` is
+empty, nothing failed in the network log, the button is enabled and its handler fires.
+Every instrument reads healthy and the app is still broken, because the framework caught
+the throw and stored it as state.
+
+```
+app.error_state()              # walks React fibers; returns what is actually held
+app.diagnose_interaction({ selector: "#send" })
+# -> verdict: "The handler ran and returned without initiating a request.
+#              It probably hit an early-return guard: read handler_source."
+```
+
+`browser.status` also reports `secure_context` on every call. A page on plain `http://`
+is not one, so `crypto.randomUUID`, `navigator.clipboard` and service workers are
+undefined there and defined on `localhost` — which is exactly how a bug survives local
+testing and dies in staging.
 
 **Leak hunting.** Two heap snapshots and a diff, reported by constructor with detached
 DOM nodes called out — the classic leak signature.
@@ -601,11 +620,19 @@ Two hundred tools is more than any model will hold in context from one-line
 blurbs, and the README is not in the session. So the docs are a tool family.
 
 ```
-guide.search { "query": "my click did nothing" }      # -> page.click, and why
+guide.orient {}                                       # START HERE: the whole surface, once
+guide.search { "query": "my click did nothing" }      # -> app.diagnose_interaction, and why
 guide.tool   { "name": "page.click" }                 # the long version
-guide.topic  { "name": "install" }                    # where this daemon lives
+guide.topic  { "name": "hidden-errors" }              # why an empty console proves nothing
 guide.list   { "family": "network" }                  # browse
 ```
+
+`guide.orient` exists because the other four assume you already know what to ask
+for. It answers the question an agent actually arrives with - what can this do,
+and what should I reach for now - in one response: every family with its purpose,
+a decision list for the situations that recur, and the techniques sessions
+habitually skip (reading component state off the React fiber; patching the
+running page to confirm a fix before editing a file).
 
 `guide.tool` merges three sources: the **live registration** (name, blurb,
 mutating flag, and every argument with its type, whether it is required and its
@@ -635,6 +662,7 @@ The topics are the material that is about the system rather than about one tool:
 | `artifacts` | How large payloads stay out of your context |
 | `control` | Sharing the browser with a human |
 | `traps` | The failures that look like something else |
+| `hidden-errors` | Why an empty console is not evidence that nothing threw, and the two moves that find it |
 | `repeat` | Session restore, workflows, sealed credentials |
 
 `install` is computed at call time, not written down: it reports this package's
@@ -825,7 +853,7 @@ Every mutating tool checks this — including the raw `cdp.send` escape hatch.
 
 ## The tool surface
 
-212 tools. `node dist/cli.js --tools` lists them all, and `guide.list` explains them from inside the session.
+215 tools. `node dist/cli.js --tools` lists them all. From inside a session, **call `guide.orient` first**: one response covers every family, what each is for, and which tool fits the situation in front of you.
 
 ```
 browser.*      list, launch, connect, status, list_targets, set_control_mode, reveal, close
@@ -842,7 +870,8 @@ network.*      list_requests, get_request, get_body, summarize, search_bodies,
 storage.*      local/session, cookies, indexeddb, caches, usage, export, import
 workflow.*     save, run, list, show, delete
 skeleton.*     capture, emit, preview, list, show, delete
-guide.*        search, tool, topic, list  (browserd's own documentation)
+app.*          error_state, diagnose_interaction  (what the app holds, not what the platform reported)
+guide.*        orient, search, tool, topic, list  (browserd's own documentation)
 credentials.*  save, login, list, delete  (use-but-never-read)
 debugger.*     enable, breakpoints, pause, resume, step, call_frames,
                evaluate_on_frame, inspect_object, wait_for_pause
@@ -874,6 +903,7 @@ npm run test:session          # 32 checks: session restore, workflow replay, han
 npm run test:skeleton         # 32 checks: skeleton capture, emit and preview
 npm run test:guide            # 24 checks: the built-in documentation, against the live tool list
 npm run test:qa               # 22 checks: semantic locators, recording, evidence, storageState
+npm run test:hidden           # 27 checks: swallowed errors, dead controls, secure context, orientation
 npm run test:real             # headed narrated walkthrough on live sites
 ```
 

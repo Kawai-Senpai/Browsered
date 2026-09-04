@@ -275,6 +275,58 @@ export async function connect(
   };
 }
 
+/**
+ * Whether the active page runs in a secure context, and what that costs it.
+ *
+ * An app served over plain http:// on a bare IP silently loses APIs that exist
+ * on localhost, so code calling them throws in staging and nowhere else. That
+ * asymmetry is invisible until something dies, so status reports it up front
+ * rather than waiting to be asked.
+ */
+async function secureContextOf(
+  instance: BrowserInstance,
+): Promise<Record<string, unknown> | null> {
+  let page;
+  try {
+    page = instance.resolvePage();
+  } catch {
+    return null;
+  }
+  try {
+    const { result, exceptionText } = await evaluate(instance, page, {
+      expression: `(() => {
+        const gated = {
+          'crypto.randomUUID': typeof (window.crypto && window.crypto.randomUUID),
+          'navigator.clipboard': typeof navigator.clipboard,
+          'navigator.serviceWorker': typeof navigator.serviceWorker,
+        };
+        return {
+          is_secure_context: window.isSecureContext === true,
+          protocol: location.protocol,
+          missing_apis: Object.entries(gated).filter(([, t]) => t === 'undefined').map(([n]) => n),
+        };
+      })()`,
+      returnByValue: true,
+      awaitPromise: true,
+      timeoutMs: 5_000,
+    });
+    if (exceptionText) return null;
+    const value = result.value as Record<string, unknown> | undefined;
+    if (!value) return null;
+    const missing = Array.isArray(value.missing_apis) ? (value.missing_apis as string[]) : [];
+    return {
+      ...value,
+      ...(value.is_secure_context === false && missing.length
+        ? {
+            note: `Not a secure context: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} undefined here but present on localhost. Code calling them throws only in this environment.`,
+          }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function status(
   ctx: OpsContext,
   args: { browser_id?: string },
@@ -325,6 +377,7 @@ export async function status(
       console_entries: ctx.stores.console.countEntries({ browserId: instance.id }),
       websockets: ctx.stores.websockets.list({ browserId: instance.id, limit: 500 }).length,
     },
+    secure_context: await secureContextOf(instance),
     active_overrides: Object.fromEntries(instance.emulation),
     fault_rules: instance.faults.size,
     debugger_enabled_on: [...instance.debuggerEnabled],

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { OpsContext } from '../ops/context.js';
 import * as artifactOps from '../ops/artifact.js';
+import * as appStateOps from '../ops/appstate.js';
 import * as auditOps from '../ops/audit.js';
 import * as browserOps from '../ops/browser.js';
 import * as captureOps from '../ops/capture.js';
@@ -694,6 +695,33 @@ export const TOOLS: ToolDef[] = [
   },
 
   /* ---------------------------------- JS --------------------------------- */
+  /* ------------------------------ app state ------------------------------ */
+  {
+    name: 'app.error_state',
+    description:
+      'Errors the application is holding that never reached the console. Frameworks (TanStack Query, SWR, Redux) catch what their own code paths throw and park it in state, so a handler can throw, roll its optimistic update back, and leave console.exceptions empty. Start here when a control does nothing and the console looks clean. Also reports whether this origin is a secure context, since crypto.randomUUID, clipboard and service workers are undefined on plain http:// but present on localhost.',
+    schema: {
+      ...scope,
+      frame_id: z.string().optional(),
+      include_capabilities: z.boolean().optional().describe('Secure-context and gated-API report. Default true.'),
+    },
+    handler: op(appStateOps.appErrorState),
+    readOnly: true,
+  },
+  {
+    name: 'app.diagnose_interaction',
+    description:
+      'Click a control and report what the application actually did: whether a handler was attached, whether it threw, whether any request was initiated, whether the app consumed the input, and any error the framework caught. Use instead of page.click when a control appears to do nothing - page.click reports DOM mutations, which unrelated re-renders also produce.',
+    schema: {
+      ...scope,
+      selector: z.string().optional().describe('CSS selector for the control.'),
+      text: z.string().optional().describe('Visible text of the control, when no selector is handy.'),
+      frame_id: z.string().optional(),
+      settle_ms: z.number().optional().describe('How long to watch after the click. Default 1500.'),
+    },
+    handler: op(appStateOps.diagnoseInteraction),
+  },
+
   {
     name: 'js.evaluate',
     description:
@@ -1158,6 +1186,16 @@ export const TOOLS: ToolDef[] = [
       'Long-form background on the system rather than on one tool: start, architecture (how it works under the hood), install (where this daemon lives and how to update it, with live paths), recording, artifacts, control, traps, repeat.',
     schema: { name: z.string().describe('Topic name. guide.list shows them all.') },
     handler: op(guideOps.guideTopic),
+    readOnly: true,
+  },
+  {
+    name: 'guide.orient',
+    description:
+      'START HERE if you have not used this server before. One call: what browserd is, every tool family and what each is for, which tool to reach for in the situations that come up most, and the techniques sessions habitually skip (reading component state off the React fiber, patching the running page to confirm a fix before editing a file). Cheaper than discovering the surface by trial.',
+    schema: {
+      verbose: z.boolean().optional().describe('Reserved; the default already includes every family.'),
+    },
+    handler: op(guideOps.guideOrient),
     readOnly: true,
   },
   {

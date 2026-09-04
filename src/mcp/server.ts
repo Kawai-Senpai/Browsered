@@ -57,6 +57,9 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'Network, console, exceptions and navigations are recorded the whole time, ' +
         'whether or not you asked for them, so queries about the past always work. ' +
         'A browser is launched automatically the first time a tool needs one.\n\n' +
+        'New here? Call guide.orient once: it returns every tool family, what each ' +
+        'is for, which tool fits the situations that come up most, and the techniques ' +
+        'sessions habitually skip. One call beats discovering 200+ tools by trial.\n\n' +
         'Investigating a page: work query-first. dom.summary before dom.get_html, ' +
         'network.summarize before network.list_requests, js.search_source before ' +
         'js.get_source. Large payloads are stored as artifacts and read with ' +
@@ -80,6 +83,21 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'guessing one and eating a full timeout. page.expect asserts and reports the ' +
         'state it saw; page.observe samples over time when the question is "how long ' +
         'was it stuck".\n\n' +
+        'When a control does nothing, do not trust an empty console. Frameworks '  +
+        '(TanStack Query, SWR, Redux) catch what their code paths throw and store it as '  +
+        'state, so console.exceptions is structurally unable to show it and the failed '  +
+        'request you are looking for was never built. app.error_state reads that state; '  +
+        'app.diagnose_interaction clicks the control and reports whether a handler ran, '  +
+        'threw, initiated a request, or returned early at a guard. Reach for both before '  +
+        'reading bundles. Two habits pay off far earlier than most sessions use them: '  +
+        'read live component state off the React fiber (__reactProps$ gives the onClick '  +
+        'source and disabled value; walking .return with .memoizedState gives every hook, '  +
+        'including caught errors), and patch the running page with js.evaluate to confirm '  +
+        'a fix before editing a file - polyfill the missing API, click again, watch for '  +
+        'the request. Both are reversible; a reload undoes them.\n\n' +
+        'browser.status reports secure_context. A page on plain http:// is not one, so '  +
+        'crypto.randomUUID, clipboard and service workers are undefined there and defined '  +
+        'on localhost. Suspect it first on any "works locally, fails deployed" report.\n\n' +
         'page.click reports observed_change: whether the DOM actually reacted. ' +
         '"Input was dispatched" and "the app handled it" are different facts, and ' +
         'retry_if_unchanged:true falls back to the element own .click() when a ' +

@@ -184,6 +184,7 @@ const FAMILY_NOTES: Record<string, string> = {
     'Emulation is sticky until reset. If a later measurement makes no sense, check environment.status before assuming the page is broken.',
   device:
     'device.preset sets viewport, scale factor, user agent and touch together. Setting only the viewport leaves the user agent saying desktop, which some apps branch on.',
+  app: 'Reads the state the application is holding, which is a different question from what the platform reported. console.exceptions can only show what reached window.onerror, and every major data-fetching library (TanStack Query, SWR, Redux Toolkit, Apollo) catches what its own code paths throw and stores it as state instead. That makes an empty console compatible with a thoroughly broken app. app.error_state walks React fibers and store objects and returns what is actually held, with the message and stack the console never printed; it also reports whether the origin is a secure context, because a page on plain http:// silently loses crypto.randomUUID, clipboard and service workers that exist on localhost. app.diagnose_interaction clicks a control and reports what the application did about it - handler attached, handler threw, request initiated, input consumed - because page.click answers whether the DOM moved, and unrelated re-renders make that true for a click that did nothing.',
   qa: 'Hands an exploration to a test harness. qa.record_start arms a recorder that captures each mutating page action with its semantic locator resolved *before* the action runs, which is the only moment that answer is reliable. qa.evidence then reads the recording browserd was keeping anyway, so the window is chosen after the flow, once you know the question worth asking. One rule governs the family: it reports what happened and never decides what should have happened, so everything assertion-shaped comes back as a candidate with a null oracle, and qa.scenario_draft refuses to call itself ready to compile until a requirement is attached.',
 };
 
@@ -704,6 +705,16 @@ If it is false, the application did not react, no matter how successful the call
 looks. Try retry_if_unchanged:true, which falls back to the element's own
 .click() and reaches framework handlers a synthetic event can miss.
 
+An empty console that means nothing. A framework caught the exception and
+stored it as state, so it never reached window.onerror. app.error_state reads
+what console.exceptions structurally cannot see. Never conclude "nothing threw"
+from a clean console alone.
+
+An origin that is not a secure context. Plain http:// on a bare IP withholds
+crypto.randomUUID, clipboard and service workers, all of which exist on
+localhost. Code calling them throws in staging only. browser.status reports
+secure_context; check it before you believe a "works locally" report.
+
 Typing that lands zero characters. page.type returns landed_characters. A
 focused, visible input can still take nothing in keystrokes mode; insert_text
 usually works where keystrokes does not.
@@ -732,6 +743,71 @@ before concluding the page is broken.
 
 A tool that vanished after an update. Your client is still talking to the old
 process. Reconnect it.`,
+  },
+  'hidden-errors': {
+    title: 'Errors the console never shows',
+    summary: 'Why an empty console is not evidence that nothing threw.',
+    body: `console.exceptions answers a platform question: what reached
+window.onerror. In any app built on TanStack Query, SWR, Redux Toolkit or
+Apollo, that is the wrong question. Those libraries catch what their own code
+paths throw and store it as state. The throw never becomes an uncaught
+exception, so the console stays clean while the application is broken.
+
+The shape this takes in practice:
+
+  a button that does nothing
+  console.exceptions          -> 0 entries
+  network, failed_only        -> nothing failed
+  the button                  -> enabled, handler attached, fires on click
+  the same code on localhost  -> works perfectly
+
+Every instrument reads healthy and the bug is still there. Worse, a framework
+that caught the error usually rolled its optimistic update back too, so the UI
+returns to the state you started in and looks like it never received the click.
+
+app.error_state reads that state directly. It walks React fibers and store
+objects and returns everything currently holding an error, with the message and
+stack the console never printed. Call it before you start reading bundles.
+
+app.diagnose_interaction goes further: it clicks the control and reports whether
+a handler was attached, whether it threw, whether any request was initiated,
+whether the app consumed the input, and what error state appeared afterwards. It
+exists because page.click's observed_change answers "did the DOM move", and on a
+re-rendering page unrelated re-renders make that true for a click that did
+nothing.
+
+Read the verdict, then the handler source, then the guards.
+
+WHY LOCAL AND STAGING DISAGREE
+
+Half of "works on my machine" is the secure context. An app served over plain
+http:// on a bare IP is not a secure context, so the browser withholds
+crypto.randomUUID, navigator.clipboard, service workers and more. localhost IS
+a secure context. The one environment where you debug is the one environment
+where the bug cannot happen.
+
+browser.status reports secure_context on every call for this reason. If it says
+false, suspect it first: a bare crypto.randomUUID() throws only there.
+
+THE MOVES AGENTS SKIP
+
+Two techniques are worth reaching for far earlier than most sessions reach for
+them, because they answer questions nothing else can:
+
+  Read component state off the fiber. The DOM node carries __reactFiber$… and
+  __reactProps$…; the props give you the live onClick source and disabled value,
+  and walking .return with .memoizedState gives you every hook the component
+  holds. This is how you see a caught error and how you check a guard's operands
+  instead of guessing at them. inspector.element and app.error_state do it for
+  you; js.evaluate does it when you need something specific.
+
+  Patch the running page and re-test. If you suspect a missing API or a bad
+  value, define it in the page with js.evaluate and drive the control again. A
+  fix confirmed against the live page before you touch a file is worth more than
+  any amount of reading, and it costs one call. Polyfill the API, click, watch
+  for the request.
+
+Both are read-mostly and reversible: reload restores the page. Use them early.`,
   },
   repeat: {
     title: 'Not repeating yourself',
@@ -801,6 +877,68 @@ function editDistance(a: string, b: string): number {
     prev = row;
   }
   return prev[b.length]!;
+}
+
+/**
+ * The single orientation call.
+ *
+ * guide.list enumerates, guide.search finds, guide.topic explains one thing.
+ * None of them answers the question an agent actually has on arrival: what can
+ * this server do, and which tool do I reach for now. Answering that in one
+ * call, densely, is worth more than any number of tools nobody knows to call.
+ */
+export async function guideOrient(
+  _ctx: OpsContext,
+  args: { verbose?: boolean },
+): Promise<Record<string, unknown>> {
+  const tools = requireCatalog();
+  const families = new Map<string, string[]>();
+  for (const tool of tools) {
+    const family = familyOf(tool.name);
+    if (!families.has(family)) families.set(family, []);
+    families.get(family)!.push(tool.name);
+  }
+
+  const capabilities = [...families.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([family, names]) => ({
+      family,
+      tools: names.sort(),
+      what_it_is_for: FAMILY_NOTES[family] ?? null,
+    }));
+
+  return {
+    what_this_is:
+      'A Chromium that records itself continuously - every request, console entry, exception and navigation - exposed over MCP with programmable DevTools. Recording is armed before the first page script runs, so questions about the past always work, including about a browser that has since closed. A browser launches automatically the first time any tool needs one.',
+    tool_count: tools.length,
+    start_here: [
+      'browser.status - where am I, what is loaded, did it actually commit, and is this a secure context. The cheapest orientation call in the server; run it before debugging anything you see.',
+      'page.snapshot - what is on screen, with refs to act on. Cheaper and more reliable than a screenshot.',
+      'page.click(ref) -> page.wait_for -> page.expect - drive, wait, assert.',
+    ],
+    choosing_a_tool: [
+      'Query before you dump: dom.summary before dom.get_html, network.summarize before network.list_requests, js.search_source before js.get_source.',
+      'Reading one value beats a screenshot: page.extract_text(selector:) is exact and costs a few hundred characters, where a capture is tens of kilobytes judged by eye.',
+      'A control did nothing: app.diagnose_interaction, NOT page.click. It reports whether a handler ran, threw, or returned early at a guard.',
+      'The console is empty but something is broken: app.error_state. Frameworks catch their own errors and store them as state, where console.exceptions structurally cannot see them.',
+      'Works locally, fails deployed: check browser.status secure_context first. Plain http:// withholds crypto.randomUUID, clipboard and service workers that localhost provides.',
+      'Why can I not see this element: css.explain_visibility names the rule that hid it.',
+      'Is the app reaching its API: network.probe asks from inside the page, so it sees CORS, service workers and the real origin. curl cannot.',
+      'Large payloads become artifacts: read them with artifact.search / artifact.read_lines / artifact.json_query rather than pulling them into context.',
+    ],
+    underused_techniques: [
+      'Read live component state off the React fiber. A DOM node carries __reactFiber$… and __reactProps$…; props give you the live onClick source and disabled value, and walking .return with .memoizedState gives every hook the component holds, including errors a framework caught. app.error_state and inspector.element do this for you; js.evaluate does it when you need something specific. Most sessions never try it and read minified bundles instead, which is slower and less conclusive.',
+      'Patch the running page and re-test. Suspect a missing API or a bad value? Define it with js.evaluate and drive the control again. Confirming a fix against the live page before editing a file costs one call and is worth more than any amount of reading. Reload undoes it.',
+      'Race outcomes instead of guessing: page.wait_for(any_of: [...]) reports which branch happened rather than eating a full timeout on the one you guessed wrong.',
+      'js.search_source is near useless against a minified production bundle. Read state, not source, when the code is built.',
+    ],
+    capabilities,
+    deeper: {
+      topics: Object.keys(TOPICS),
+      how: 'guide.topic(name) for any of the above. guide.tool(name) for one tool with its arguments and family notes. guide.search(query) when you know the task but not the tool name.',
+    },
+    hint: 'guide.topic("hidden-errors") is the one most sessions need and never open: why an empty console is not evidence that nothing threw.',
+  };
 }
 
 export async function guideTool(
