@@ -1592,7 +1592,8 @@ export async function unhighlight(ctx: OpsContext, args: PageArgs): Promise<Reco
  * hidden, so it survives - and then the first 1500 characters of every read are
  * boilerplate nobody asked for.
  */
-const VISIBLE_TEXT_FN = `function (root) {
+/** Shared with the document capture path in ops/document.ts; keep one copy. */
+export const VISIBLE_TEXT_FN = `function (root) {
   const clipped = (el) => {
     const s = getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden') return true;

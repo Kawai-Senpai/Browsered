@@ -22,6 +22,7 @@ export type ArtifactKind =
   | 'heap_snapshot'
   | 'coverage'
   | 'storage_export'
+  | 'page_document'
   | 'skeleton'
   | 'skeleton_source'
   | 'debug_bundle'

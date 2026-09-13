@@ -23,6 +23,9 @@ export type Prefix =
   | 'art' // exported artifact on disk
   | 'flt' // fault-injection rule
   | 'prof' // profiling session
+  | 'doc' // saved page document
+  | 'crl' // crawl run
+  | 'dmx' // document match hit
   | 'blob'; // stored payload
 
 const counters = new Map<Prefix, number>();

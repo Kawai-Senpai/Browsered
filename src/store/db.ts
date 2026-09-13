@@ -7,7 +7,7 @@ const log = createLogger('store:db');
 
 export type Db = Database.Database;
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS browsers (
@@ -183,6 +183,75 @@ CREATE TABLE IF NOT EXISTS navigations (
   ts                INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nav_browser ON navigations(browser_id, ts DESC);
+
+CREATE TABLE IF NOT EXISTS documents (
+  doc_handle        TEXT PRIMARY KEY,
+  url               TEXT NOT NULL,
+  canonical_url     TEXT NOT NULL,
+  site              TEXT NOT NULL,
+  url_path          TEXT,
+  title             TEXT,
+  collection        TEXT,
+  label             TEXT,
+  format            TEXT NOT NULL,
+  text_length       INTEGER NOT NULL,
+  word_count        INTEGER NOT NULL,
+  artifact_handle   TEXT,
+  crawl_handle      TEXT,
+  depth             INTEGER,
+  parent_url        TEXT,
+  links             TEXT,
+  headings          TEXT,
+  meta              TEXT,
+  browser_id        TEXT,
+  fetched_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  revision          INTEGER NOT NULL DEFAULT 1
+);
+-- The canonical URL is the document's identity: re-saving a page updates it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_canonical ON documents(canonical_url);
+CREATE INDEX IF NOT EXISTS idx_documents_site ON documents(site, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_documents_crawl ON documents(crawl_handle);
+
+-- Ranked search with snippets needs the text inside the index, so this holds a
+-- copy of what the artifact holds on disk. Rowids are kept in step with
+-- documents.rowid by DocumentStore; nothing else may write here.
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+  title,
+  url,
+  body,
+  tokenize = 'porter unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS crawls (
+  crawl_handle      TEXT PRIMARY KEY,
+  start_url         TEXT NOT NULL,
+  site              TEXT NOT NULL,
+  collection        TEXT,
+  config            TEXT NOT NULL,
+  status            TEXT NOT NULL,
+  pages_visited     INTEGER NOT NULL DEFAULT 0,
+  pages_saved       INTEGER NOT NULL DEFAULT 0,
+  matches_found     INTEGER NOT NULL DEFAULT 0,
+  errors            TEXT,
+  started_at        INTEGER NOT NULL,
+  finished_at       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_crawls_started ON crawls(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS document_matches (
+  match_handle      TEXT PRIMARY KEY,
+  doc_handle        TEXT NOT NULL,
+  crawl_handle      TEXT,
+  rule              TEXT NOT NULL,
+  kind              TEXT NOT NULL,
+  value             TEXT,
+  detail            TEXT,
+  ts                INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_matches_doc ON document_matches(doc_handle);
+CREATE INDEX IF NOT EXISTS idx_matches_crawl ON document_matches(crawl_handle, rule);
 `;
 
 export function openDatabase(file: string): Db {
@@ -206,7 +275,11 @@ export function openDatabase(file: string): Db {
   });
 
   const row = db.pragma('user_version', { simple: true }) as number;
-  if (row === 0) {
+  if (row < SCHEMA_VERSION) {
+    // Every statement above is CREATE ... IF NOT EXISTS, so running the current
+    // schema against an older database adds what is missing and leaves existing
+    // recordings untouched. The stamp just records that it happened.
+    if (row > 0) log.info(`upgrading ${file} schema v${row} -> v${SCHEMA_VERSION}`);
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   } else if (row > SCHEMA_VERSION) {
     throw new Error(

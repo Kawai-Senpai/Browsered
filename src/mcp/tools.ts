@@ -107,7 +107,7 @@ const semanticTarget = z.object({
 });
 
 /** Cast a typed op into the uniform handler shape. */
-function op<A>(fn: (ctx: OpsContext, args: A) => Promise<Record<string, unknown>>): ToolDef['handler'] {
+export function op<A>(fn: (ctx: OpsContext, args: A) => Promise<Record<string, unknown>>): ToolDef['handler'] {
   return (ctx, args) => fn(ctx, args as A);
 }
 

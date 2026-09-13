@@ -3,12 +3,14 @@ import type { OpsContext } from '../ops/context.js';
 import { AgentBrowserError, describeError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { z } from 'zod';
-import { TOOLS } from './tools.js';
+import { TOOLS as CORE_TOOLS } from './tools.js';
+import { DOCUMENT_TOOLS } from './document-tools.js';
 import { setToolInvoker } from '../ops/workflow.js';
 import { setToolCatalog } from '../ops/guide.js';
 import { afterAction, beforeAction } from '../ops/qa.js';
 
 const log = createLogger('mcp');
+const TOOLS = [...CORE_TOOLS, ...DOCUMENT_TOOLS];
 
 /** Content block shapes the MCP SDK accepts back from a tool. */
 type ContentBlock =
@@ -132,6 +134,16 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'skeleton.emit turns that into html, css or a React/Vue/Svelte component, and ' +
         'skeleton.preview draws it over the live page so one screenshot shows whether ' +
         'the placeholder actually lines up.\n\n' +
+        'Reading documentation is worth doing once rather than every time. doc.save ' +
+        'captures a page as a searchable document: it scrolls until the lazily-revealed ' +
+        'sections are actually in the DOM, keeps headings, code fences, tables and link ' +
+        'targets as Markdown, and drops the nav and footer that would otherwise be stored ' +
+        'on every page of the site. After that doc.search answers from disk across ' +
+        'everything saved, with regex mode for what full-text search cannot express. ' +
+        'doc.crawl does it in bulk - a starting URL, a depth and a scope - and its find ' +
+        'rules match regex, text or CSS selectors on every page it visits, which makes it ' +
+        'a way to search a whole site as much as a way to import one. Check ' +
+        'doc.list{group_by:"site"} before fetching anything: the page may already be saved.\n\n' +
         'You do not have to hold all of this. guide.search{query} finds the right tool ' +
         'from a plain description of the problem, guide.tool{name} gives the long ' +
         'write-up on one tool including its caveats, and guide.topic covers the system ' +
