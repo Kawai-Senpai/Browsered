@@ -2256,3 +2256,278 @@ export async function listFrames(ctx: OpsContext, args: PageArgs): Promise<Recor
     hint: 'Pass frame_id to dom/js operations to work inside a same-process iframe. Cross-origin iframes appear as their own target_id in page.list_tabs(include_all_targets=true).',
   };
 }
+
+// ---------------------------------------------------------------- filmstrip
+
+export interface FilmstripArgs extends PageArgs {
+  duration_ms?: number;
+  frames?: number;
+  columns?: number;
+  frame_width?: number;
+  quality?: number;
+  label?: string;
+  save_path?: string;
+  return_image?: boolean;
+  scroll_by?: number;
+  hover?: string;
+  reload?: boolean;
+}
+
+interface FilmFrame {
+  data: string;
+  /** ms since recording started */
+  at: number;
+}
+
+/**
+ * Even sampling across the recording.
+ *
+ * The screencast pushes a frame whenever the compositor produces one, so they
+ * arrive at irregular intervals and there are usually far more than wanted.
+ * Taking the first N would show the first fraction of a second and nothing
+ * else, which is the obvious mistake here; this picks the frame nearest each
+ * evenly spaced timestamp instead.
+ */
+function sampleFrames(frames: FilmFrame[], want: number): FilmFrame[] {
+  if (frames.length <= want) return frames;
+  const first = frames[0];
+  const last = frames[frames.length - 1];
+  if (!first || !last) return frames.slice(0, want);
+  const span = last.at - first.at;
+  if (span <= 0) return frames.slice(0, want);
+  const used = new Set<number>();
+  const out: FilmFrame[] = [];
+  for (let i = 0; i < want; i += 1) {
+    const wanted = first.at + (span * i) / (want - 1 || 1);
+    let best = -1;
+    let bestGap = Infinity;
+    frames.forEach((f, idx) => {
+      if (used.has(idx)) return;
+      const gap = Math.abs(f.at - wanted);
+      if (gap < bestGap) {
+        bestGap = gap;
+        best = idx;
+      }
+    });
+    const chosen = best >= 0 ? frames[best] : undefined;
+    if (chosen) {
+      used.add(best);
+      out.push(chosen);
+    }
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/**
+ * Record the page for a moment and tile the frames into ONE image.
+ *
+ * WHY THIS EXISTS. A screenshot is a single instant, which is the wrong
+ * instrument for most questions about a modern page: does the entrance land or
+ * stall, does the hover move anything, does the reveal fire, does a scrubbed
+ * effect track the scroll. Repeated page.screenshot calls do not answer them
+ * either - each forces its own frame at an arbitrary moment, and a
+ * backgrounded or occluded window may not be producing frames at all in
+ * between, so every capture looks identical and frozen.
+ *
+ * The screencast pushes frames as the compositor makes them, and laying the
+ * samples out as a contact sheet is what makes them readable: the same element
+ * at t0, t1, t2 with its position changing reads as motion, where three
+ * separate screenshots read as three unrelated pictures.
+ *
+ * NO IMAGE LIBRARY. This package depends on no image toolkit, and adding one
+ * to tile a few JPEGs would be a heavy dependency for a single feature (sharp
+ * ships prebuilt native binaries per platform). The browser already has a
+ * capable 2D compositor, so the frames are drawn onto a canvas in a SCRATCH
+ * TAB and exported as one JPEG. It has to be a scratch tab: drawing into the
+ * page under test would mutate the thing being measured.
+ */
+export async function filmstrip(
+  ctx: OpsContext,
+  args: FilmstripArgs,
+): Promise<Record<string, unknown>> {
+  const { instance, target } = await pageOf(ctx, args);
+
+  const durationMs = Math.min(Math.max(args.duration_ms ?? 2_000, 200), 15_000);
+  const want = Math.min(Math.max(args.frames ?? 8, 2), 24);
+  const columns = Math.min(Math.max(args.columns ?? 4, 1), 6);
+  const frameWidth = Math.min(Math.max(args.frame_width ?? 320, 120), 800);
+  const quality = Math.min(Math.max(args.quality ?? 72, 1), 100);
+
+  const frames: FilmFrame[] = [];
+  const started = Date.now();
+
+  /*
+   * Frames MUST be acknowledged or Chromium stops sending after the first
+   * couple. The ack carries the sessionId the frame arrived with.
+   */
+  const off = target.session.on('Page.screencastFrame', (params) => {
+    const p = params as { data?: string; sessionId?: number };
+    if (typeof p.data !== 'string') return;
+    frames.push({ data: p.data, at: Date.now() - started });
+    if (typeof p.sessionId === 'number') {
+      void target.session.trySend('Page.screencastFrameAck', { sessionId: p.sessionId });
+    }
+  });
+
+  try {
+    await target.session.send('Page.startScreencast', {
+      format: 'jpeg',
+      quality: Math.min(quality + 10, 100),
+      maxWidth: Math.round(frameWidth * 2),
+      everyNthFrame: 1,
+    });
+
+    /*
+     * The optional actions run INSIDE the recording window, which is the whole
+     * point: an entrance, a hover response or a scrubbed scroll effect only
+     * exists while something is happening.
+     */
+    if (args.reload) await target.session.trySend('Page.reload', { ignoreCache: false });
+
+    if (args.hover) {
+      const point = await evaluate(instance, target, {
+        expression:
+          '(() => { const el = document.querySelector(' +
+          JSON.stringify(args.hover) +
+          '); if (!el) return null; const r = el.getBoundingClientRect(); ' +
+          'return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()',
+        returnByValue: true,
+        awaitPromise: false,
+      }).catch(() => null);
+      const value = point?.result?.value as { x: number; y: number } | null | undefined;
+      if (value) {
+        await target.session.trySend('Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          x: value.x,
+          y: value.y,
+        });
+      }
+    }
+
+    if (args.scroll_by) {
+      // Stepped, not jumped: a scrubbed effect is only visible if the scroll
+      // actually passes through the intermediate positions.
+      const steps = 12;
+      for (let i = 0; i < steps; i += 1) {
+        await target.session.trySend('Input.dispatchMouseEvent', {
+          type: 'mouseWheel',
+          x: 10,
+          y: 10,
+          deltaX: 0,
+          deltaY: args.scroll_by / steps,
+        });
+        await delay(Math.max(16, durationMs / steps / 2));
+      }
+    }
+
+    await delay(durationMs);
+  } finally {
+    await target.session.trySend('Page.stopScreencast');
+    off();
+  }
+
+  if (!frames.length) {
+    throw new AgentBrowserError(
+      'no_frames',
+      'The screencast produced no frames, so there is nothing to tile.',
+      {
+        operation: 'page.filmstrip',
+        hint:
+          'A backgrounded or occluded window may not composite at all. Bring it on screen with browser.reveal, ' +
+          'or give the page a reason to paint via reload / hover / scroll_by.',
+      },
+    );
+  }
+
+  const picked = sampleFrames(frames, want);
+
+  const { targetId } = await instance.browserSession.send<{ targetId: string }>(
+    'Target.createTarget',
+    { url: 'about:blank', background: true },
+  );
+  const scratch = await waitForTarget(instance, targetId, 10_000);
+
+  let sheet = '';
+  let sheetW = 0;
+  let sheetH = 0;
+  try {
+    const script =
+      '(async () => {' +
+      '  const srcs = ' + JSON.stringify(picked.map((f) => f.data)) + ';' +
+      '  const labels = ' + JSON.stringify(picked.map((f) => String(f.at) + 'ms')) + ';' +
+      '  const cols = ' + columns + ';' +
+      '  const fw = ' + frameWidth + ';' +
+      '  const imgs = await Promise.all(srcs.map((d) => new Promise((res, rej) => {' +
+      '    const im = new Image();' +
+      '    im.onload = () => res(im);' +
+      '    im.onerror = rej;' +
+      '    im.src = "data:image/jpeg;base64," + d;' +
+      '  })));' +
+      '  const ratio = imgs[0].naturalHeight / imgs[0].naturalWidth;' +
+      '  const fh = Math.round(fw * ratio);' +
+      '  const rows = Math.ceil(imgs.length / cols);' +
+      '  const pad = 6; const bar = 18;' +
+      '  const c = document.createElement("canvas");' +
+      '  c.width = cols * fw + pad * (cols + 1);' +
+      '  c.height = rows * (fh + bar) + pad * (rows + 1);' +
+      '  const g = c.getContext("2d");' +
+      '  g.fillStyle = "#111"; g.fillRect(0, 0, c.width, c.height);' +
+      '  imgs.forEach((im, i) => {' +
+      '    const x = pad + (i % cols) * (fw + pad);' +
+      '    const y = pad + Math.floor(i / cols) * (fh + bar + pad);' +
+      '    g.drawImage(im, x, y, fw, fh);' +
+      '    g.fillStyle = "#7fffd4";' +
+      '    g.font = "12px ui-monospace, monospace";' +
+      '    g.fillText((i + 1) + "  " + labels[i], x + 2, y + fh + 13);' +
+      '  });' +
+      '  return { data: c.toDataURL("image/jpeg", ' + quality / 100 + ').split(",")[1], w: c.width, h: c.height };' +
+      '})()';
+
+    const composed = await evaluate(instance, scratch, {
+      expression: script,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const value = composed.result.value as { data: string; w: number; h: number };
+    sheet = value.data;
+    sheetW = value.w;
+    sheetH = value.h;
+  } finally {
+    await instance.browserSession
+      .send('Target.closeTarget', { targetId })
+      .catch(() => undefined);
+  }
+
+  const buffer = Buffer.from(sheet, 'base64');
+  const artifact = ctx.stores.artifacts.put('screenshot', buffer, {
+    browserId: instance.id,
+    label: args.label ?? 'filmstrip',
+    mime: 'image/jpeg',
+    sourceRef: target.handle,
+    meta: { kind: 'filmstrip', frames: picked.length, url: target.info.url },
+  });
+
+  const out: Record<string, unknown> = {
+    target_id: target.handle,
+    url: await currentUrl(instance, target),
+    duration_ms: durationMs,
+    frames_captured: frames.length,
+    frames_in_sheet: picked.length,
+    columns,
+    sheet_size: { width: sheetW, height: sheetH },
+    timestamps_ms: picked.map((f) => f.at),
+    size_bytes: buffer.length,
+    artifact: toArtifactRef(artifact),
+    hint:
+      'Frames run left to right, top to bottom, each labelled with its offset from the start of the recording. ' +
+      'Compare the SAME element across cells to read the motion; identical cells mean nothing moved.',
+  };
+
+  if (args.save_path) {
+    out.saved_to = ctx.stores.artifacts.exportTo(artifact.artifact_handle, args.save_path);
+  }
+  if (args.return_image !== false) {
+    out._image = { data: sheet, mime: 'image/jpeg' };
+  }
+  return out;
+}

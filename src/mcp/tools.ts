@@ -330,6 +330,33 @@ export const TOOLS: ToolDef[] = [
     readOnly: true,
   },
   {
+    name: 'page.filmstrip',
+    description:
+      'SEE MOTION. Records the page briefly and returns the frames tiled into ONE labelled contact sheet, so entrance ' +
+      'animations, hovers, reveals and scroll effects can actually be judged. A screenshot is a single instant and ' +
+      'repeated screenshots are unrelated instants; this samples evenly across a real recording. Drive the motion with ' +
+      'reload, hover or scroll_by so there is something to film.',
+    schema: {
+      ...scope,
+      duration_ms: z.number().optional().describe('How long to record. Default 2000, max 15000.'),
+      frames: z.number().optional().describe('Frames in the sheet, sampled evenly across the recording. Default 8, max 24.'),
+      columns: z.number().optional().describe('Columns in the contact sheet. Default 4.'),
+      frame_width: z.number().optional().describe('Width of each frame in the sheet. Default 320.'),
+      quality: z.number().optional().describe('JPEG quality 1-100. Default 72.'),
+      reload: z.boolean().optional().describe('Reload as recording starts, to film an entrance animation.'),
+      hover: z.string().optional().describe('CSS selector to hover once recording starts, to film a hover response.'),
+      scroll_by: z
+        .number()
+        .optional()
+        .describe('Scroll this many pixels across the recording, stepped, to film a scroll-driven effect.'),
+      label: z.string().optional().describe('Tag for this capture. Filter later with artifact.list(label:).'),
+      save_path: z.string().optional(),
+      return_image: z.boolean().optional().describe('Default true. Set false to store only.'),
+    },
+    handler: op(pageOps.filmstrip),
+    readOnly: true,
+  },
+  {
     name: 'page.snapshot',
     description:
       'Accessibility-tree snapshot of the interactive elements, each with a stable ref (eNN) usable by page.click and friends. Cheaper and more reliable than screenshots for deciding what to click. format:"aria" instead emits Playwright\'s aria-snapshot dialect for a toMatchAriaSnapshot assertion - refless, and it leaves existing refs alone.',
