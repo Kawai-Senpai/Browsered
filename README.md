@@ -290,6 +290,8 @@ running, omitting it is an error rather than a guess.
 | A headless session needs a human | `browser.reveal { control_mode: "observe" }`. Returns a **new** `browser_id`; cookies and logins survive, the live page does not. |
 | The agent keeps re-typing a login | `credentials.save` it once, then `credentials.login { site }`. The password is never returned to the model and is bound to one origin. |
 | Need one request to return a specific status | `fault.replace_response { url, status, body, headers }`. Add `count: N` to affect only the next N matches, so the retry sees the real server. |
+| `getUserMedia` / `getDisplayMedia` stuck on a prompt or the screen picker | That is browser UI no click reaches. Relaunch with `browser.launch { media: { camera: true, microphone: true, fake_devices: true, screen: true } }`. See [Camera, microphone and screen capture](#camera-microphone-and-screen-capture). |
+| `navigator.mediaDevices` is undefined | Not a secure context. Serve over https, or use `http://localhost` / `127.0.0.1`. |
 
 ### Environment variables
 
@@ -301,6 +303,7 @@ running, omitting it is an error rather than a guess.
 | `AGENTBROWSER_NO_BUNDLED_EXTENSIONS` | `1` to skip the capture panel |
 | `AGENTBROWSER_LOG_LEVEL` | `trace` \| `debug` \| `info` \| `warn` \| `error` |
 | `AGENTBROWSER_PORT` | HTTP port for `--http` mode |
+| `AGENTBROWSER_MEDIA` | Default media capture for every launch, as a comma list: `camera,microphone,screen,fake_devices` |
 | `WORKFLOW_VAR_<NAME>` | Supplies `{{name}}` to `workflow.run`, keeping secrets out of saved workflows |
 
 ### One-shot install
@@ -461,7 +464,7 @@ node dist/cli.js --help
 | `--no-auto-launch` | Never spawn implicitly; require `browser.launch` |
 | `--log-level LEVEL` | `trace` \| `debug` \| `info` \| `warn` \| `error` |
 
-Env: `AGENTBROWSER_HOME`, `AGENTBROWSER_PORT`, `AGENTBROWSER_LOG_LEVEL`, `AGENTBROWSER_HEADLESS`.
+Env: `AGENTBROWSER_HOME`, `AGENTBROWSER_PORT`, `AGENTBROWSER_LOG_LEVEL`, `AGENTBROWSER_HEADLESS`, `AGENTBROWSER_MEDIA`.
 
 HTTP mode binds loopback only and validates `Origin` — this endpoint is full browser
 control, and a page on the open web must not be able to reach it.
@@ -613,6 +616,71 @@ a password manager for anything that matters.
 
 Prefer `storage.export` / `storage.import` where it works: restoring a session
 cookie needs no stored password at all.
+
+## Camera, microphone and screen capture
+
+A proctoring check or a video call stops at browser UI: the `getUserMedia`
+permission bubble and the `getDisplayMedia` source picker. Neither is part of the
+page, so no click or CDP call gets past them. Chromium can be told to answer both
+itself, but only at process start, so it is a launch option:
+
+```jsonc
+browser.launch {
+  "media": { "camera": true, "microphone": true, "fake_devices": true, "screen": true }
+}
+```
+
+| Field | What it does | Chromium switch |
+| --- | --- | --- |
+| `camera`, `microphone` | Accept capture requests with no prompt, and grant the permission over CDP so `navigator.permissions` reports `granted` | `--auto-accept-camera-and-microphone-capture` |
+| `fake_devices` | Synthetic camera and microphone: repeatable, no hardware, no OS permission | `--use-fake-device-for-media-stream` |
+| `video_file` | Absolute `.y4m` or `.mjpeg` path played as the camera (implies `fake_devices`) | `--use-file-for-fake-video-capture` |
+| `audio_file` | Absolute `.wav` path played, looping, as the microphone (implies `fake_devices`) | `--use-file-for-fake-audio-capture` |
+| `screen` | `getDisplayMedia` takes a screen with no picker; which screen is not controllable | `--auto-select-screen-capture-source` |
+| `screen_source` | Take the source whose title contains this text, e.g. `"Entire screen"` in an English UI | `--auto-select-desktop-capture-source` |
+| `origin` | Scope the camera/microphone grant to one origin (default: all) | none (CDP `Browser.grantPermissions`) |
+
+Nothing changes unless you ask: a launch without `media` gets exactly the command
+line it always had. The result's `media` block lists the switches actually passed
+and the permissions actually granted, and `browser.status` repeats it. A relative
+path, a missing file or an unsupported format is refused with `bad_media` before
+anything launches. `--use-fake-ui-for-media-stream` is deliberately not used:
+Chromium's own switch docs recommend the auto-accept switch instead because the
+older one also intercepts screen and tab capture.
+
+Media is fixed for the life of the process. To change it, `browser.close` and
+launch again; `browser.reveal` carries it over when it relaunches a headless
+browser.
+
+Two things no switch can do:
+
+- **Secure context.** `navigator.mediaDevices` exists only on `https://` or on
+  `http://localhost` / `127.0.0.1`. On plain `http://` to any other host it is
+  undefined and the app fails before any prompt.
+- **OS permission for real devices.** With `fake_devices` off, the operating
+  system can still refuse the hardware. On Windows 11 that is **Settings > Privacy
+  & security > Camera** (and **Microphone**), with camera access on and **"Let
+  desktop apps access your camera"** on - Chromium is a desktop app. Windows 10
+  calls it "Allow desktop apps to access your camera" under Settings > Privacy.
+  The page usually sees a `NotAllowedError` even though the browser did its part.
+
+On a browser that is already running, `permissions.grant { permissions: ["camera",
+"microphone"] }` is enough for `getUserMedia` to resolve without a prompt (web
+names are mapped to CDP's `videoCapture` / `audioCapture`). It cannot supply a
+device, and nothing grants away the `getDisplayMedia` picker; both need `media`
+at launch.
+
+To make it the default for every launch, including auto-launched browsers, put a
+`media` object in `~/.agent-browser/config.json` with the same fields in camelCase:
+
+```json
+{ "media": { "camera": true, "microphone": true, "fakeDevices": true, "screen": true,
+             "videoFile": "C:/fixtures/face.y4m" } }
+```
+
+or set `AGENTBROWSER_MEDIA=camera,microphone,screen,fake_devices` for the on/off
+fields. A launch that passes `media` replaces the default whole; `media: {}`
+launches with none.
 
 ## It documents itself
 
@@ -904,6 +972,7 @@ npm run test:skeleton         # 32 checks: skeleton capture, emit and preview
 npm run test:guide            # 24 checks: the built-in documentation, against the live tool list
 npm run test:qa               # 22 checks: semantic locators, recording, evidence, storageState
 npm run test:hidden           # 27 checks: swallowed errors, dead controls, secure context, orientation
+npm run test:media            # 19 checks: camera, microphone and screen capture with fake devices
 npm run test:real             # headed narrated walkthrough on live sites
 ```
 

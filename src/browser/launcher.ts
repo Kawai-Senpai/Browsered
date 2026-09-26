@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { AgentBrowserError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { bundledExtensions, paths, resolveChromium, type ResolvedBrowser } from '../util/paths.js';
 
@@ -61,6 +62,128 @@ function linuxContainerArgs(): string[] {
   return ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
 }
 
+/**
+ * Camera, microphone and screen capture for automated tests.
+ *
+ * getUserMedia and getDisplayMedia stop at browser UI - a permission bubble and
+ * a source picker - that CDP cannot click through, so a proctoring or
+ * video-call flow is untestable unless the browser is told at process start to
+ * answer those prompts itself. Every field is opt-in: an empty object adds no
+ * switches, so a launch without media gets exactly the command line it always had.
+ */
+export interface MediaOptions {
+  /** Accept camera requests without a prompt, and grant the camera permission. */
+  camera?: boolean;
+  /** Accept microphone requests without a prompt, and grant the microphone permission. */
+  microphone?: boolean;
+  /** Auto-pick a screen in the getDisplayMedia picker. Which screen is not controllable. */
+  screen?: boolean;
+  /** Auto-pick the capture source whose title contains this text, e.g. "Entire screen". Implies screen. */
+  screenSource?: string;
+  /** Replace real devices with Chromium's synthetic camera and microphone. */
+  fakeDevices?: boolean;
+  /** Absolute path to a .y4m or .mjpeg file played as the camera. Implies fakeDevices. */
+  videoFile?: string;
+  /** Absolute path to a .wav file played as the microphone. Implies fakeDevices. */
+  audioFile?: string;
+  /** Scope the camera/microphone permission grant to this origin. Default: every origin. */
+  origin?: string;
+}
+
+/** An existing, absolute media file with one of the formats Chromium can play. */
+function mediaFile(field: string, path: string, extensions: string[]): string {
+  if (!isAbsolute(path)) {
+    throw new AgentBrowserError(
+      'bad_media',
+      `media.${field} must be an absolute path; got "${path}". Chromium resolves it against its own working directory, not yours.`,
+    );
+  }
+  if (!extensions.some((ext) => path.toLowerCase().endsWith(ext))) {
+    throw new AgentBrowserError(
+      'bad_media',
+      `media.${field} must be a ${extensions.join(' or ')} file; got "${path}". Chromium silently falls back to its test pattern for anything else.`,
+    );
+  }
+  let isFile = false;
+  try {
+    isFile = statSync(path).isFile();
+  } catch {
+    /* reported below */
+  }
+  if (!isFile) throw new AgentBrowserError('bad_media', `media.${field} does not exist or is not a file: ${path}`);
+  return path;
+}
+
+/**
+ * The Chromium switches for a media configuration, validated.
+ *
+ * Switch names are Chromium's own (content_switches, media_switches,
+ * chrome_switches). --auto-accept-camera-and-microphone-capture is used rather
+ * than --use-fake-ui-for-media-stream because the latter also intercepts screen
+ * and tab capture; Chromium's own switch comment says to prefer the former for
+ * exactly that reason, and it leaves the picker to the auto-select switches.
+ */
+export function mediaArgs(media: MediaOptions | undefined): string[] {
+  if (!media) return [];
+  const args: string[] = [];
+
+  if (media.camera || media.microphone) args.push('--auto-accept-camera-and-microphone-capture');
+
+  const videoFile =
+    media.videoFile === undefined ? undefined : mediaFile('video_file', media.videoFile, ['.y4m', '.mjpeg']);
+  const audioFile = media.audioFile === undefined ? undefined : mediaFile('audio_file', media.audioFile, ['.wav']);
+  // Chromium splits this switch's value on '%' to read a "%noloop" suffix and
+  // CHECK-fails the whole browser on anything else it finds there.
+  if (audioFile?.includes('%')) {
+    throw new AgentBrowserError('bad_media', `media.audio_file cannot contain "%": ${audioFile}`);
+  }
+  const files = videoFile !== undefined || audioFile !== undefined;
+  if (files && media.fakeDevices === false) {
+    throw new AgentBrowserError(
+      'bad_media',
+      "video_file and audio_file play through Chromium's fake capture devices, so they cannot be combined with fake_devices:false.",
+    );
+  }
+  if (media.fakeDevices || files) args.push('--use-fake-device-for-media-stream');
+  if (videoFile) args.push(`--use-file-for-fake-video-capture=${videoFile}`);
+  if (audioFile) args.push(`--use-file-for-fake-audio-capture=${audioFile}`);
+
+  if (media.screenSource !== undefined) {
+    if (!media.screenSource.trim()) {
+      throw new AgentBrowserError('bad_media', 'media.screen_source is empty. Omit it and pass screen:true to take any screen.');
+    }
+    if (media.screen === false) {
+      throw new AgentBrowserError('bad_media', 'media.screen_source auto-selects a capture source, so it cannot be combined with screen:false.');
+    }
+    // One switch, not both: the name-based one is the more specific request.
+    args.push(`--auto-select-desktop-capture-source=${media.screenSource}`);
+  } else if (media.screen) {
+    args.push('--auto-select-screen-capture-source');
+  }
+
+  // The origin feeds a CDP grant after launch, not a switch, but a typo there
+  // would only surface as a log line, so it is refused here with the rest.
+  if (media.origin !== undefined) {
+    let origin = 'null';
+    try {
+      origin = new URL(media.origin).origin;
+    } catch {
+      /* reported below */
+    }
+    if (origin === 'null') {
+      throw new AgentBrowserError('bad_media', `media.origin is not an origin: "${media.origin}". Use e.g. "https://app.example.com".`);
+    }
+  }
+
+  return args;
+}
+
+/** The CDP permissions a media configuration grants at launch. */
+export function mediaPermissions(media: MediaOptions | undefined): string[] {
+  if (!media) return [];
+  return [...(media.camera ? ['videoCapture'] : []), ...(media.microphone ? ['audioCapture'] : [])];
+}
+
 export interface LaunchOptions {
   profile: string;
   headless?: boolean;
@@ -73,6 +196,8 @@ export interface LaunchOptions {
   /** Start with these URLs open. */
   urls?: string[];
   windowSize?: { width: number; height: number };
+  /** Camera, microphone and screen capture without prompts. Off unless given. */
+  media?: MediaOptions;
   /** Enable Chromium NetLog capture for the whole browser lifetime. */
   netLog?: boolean;
   /** Chromium capture mode: Default | IncludeSensitive | Everything. */
@@ -158,6 +283,8 @@ async function readDevToolsActivePort(
 export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBrowser> {
   const resolved = resolveChromium(options.chromiumPath);
   const userDataDir = paths.profile(options.profile);
+  // Validated before anything touches the profile, so a bad path costs nothing.
+  const media = mediaArgs(options.media);
 
   if (options.freshProfile && existsSync(userDataDir)) {
     rmSync(userDataDir, { recursive: true, force: true });
@@ -230,6 +357,11 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
     // Chromium capture modes: Default | IncludeSensitive | Everything.
     // "Everything" includes raw socket bytes and therefore credentials.
     args.push(`--net-log-capture-mode=${options.netLogCaptureMode ?? 'Default'}`);
+  }
+
+  if (media.length) {
+    log.info(`media capture switches: ${media.join(' ')}`);
+    args.push(...media);
   }
 
   if (options.args?.length) args.push(...options.args);

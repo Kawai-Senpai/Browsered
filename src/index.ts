@@ -6,7 +6,7 @@
  */
 export { BrowserInstance } from './browser/instance.js';
 export { BrowserRegistry } from './browser/registry.js';
-export { launchBrowser, killBrowserProcess } from './browser/launcher.js';
+export { launchBrowser, killBrowserProcess, mediaArgs, type MediaOptions } from './browser/launcher.js';
 export { TargetManager, type ManagedTarget } from './browser/target-manager.js';
 
 export { CdpConnection, ROOT_SESSION } from './cdp/connection.js';

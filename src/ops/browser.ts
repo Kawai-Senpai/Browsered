@@ -1,5 +1,6 @@
 import { ROOT_SESSION } from '../cdp/connection.js';
 import type { BrowserInstance } from '../browser/instance.js';
+import { mediaArgs, type MediaOptions } from '../browser/launcher.js';
 import type { ManagedTarget } from '../browser/target-manager.js';
 import { evaluate } from './element.js';
 import type { ControlMode } from '../config.js';
@@ -122,6 +123,56 @@ export async function listInstances(
   };
 }
 
+/** browser.launch's `media` argument, as the tool schema spells it. */
+interface MediaArgs {
+  camera?: boolean;
+  microphone?: boolean;
+  screen?: boolean;
+  screen_source?: string;
+  fake_devices?: boolean;
+  video_file?: string;
+  audio_file?: string;
+  origin?: string;
+}
+
+function toMediaOptions(media: MediaArgs): MediaOptions {
+  return {
+    ...(media.camera !== undefined ? { camera: media.camera } : {}),
+    ...(media.microphone !== undefined ? { microphone: media.microphone } : {}),
+    ...(media.screen !== undefined ? { screen: media.screen } : {}),
+    ...(media.screen_source !== undefined ? { screenSource: media.screen_source } : {}),
+    ...(media.fake_devices !== undefined ? { fakeDevices: media.fake_devices } : {}),
+    ...(media.video_file !== undefined ? { videoFile: media.video_file } : {}),
+    ...(media.audio_file !== undefined ? { audioFile: media.audio_file } : {}),
+    ...(media.origin !== undefined ? { origin: media.origin } : {}),
+  };
+}
+
+/**
+ * What a media launch actually switched on, plus the two conditions no switch
+ * can satisfy. Both look exactly like "the flag did not work" from inside the
+ * page, so they are stated up front rather than left to be rediscovered.
+ */
+function mediaReport(instance: BrowserInstance): Record<string, unknown> | null {
+  const media = instance.media;
+  if (!media) return null;
+  const switches = mediaArgs(media);
+  const realDevices = (media.camera || media.microphone) && !switches.includes('--use-fake-device-for-media-stream');
+  return {
+    switches,
+    permissions_granted: instance.mediaPermissionsGranted,
+    ...(media.origin ? { origin: media.origin } : {}),
+    secure_context_note:
+      'getUserMedia and getDisplayMedia exist only in a secure context: https://, or http://localhost / 127.0.0.1. On plain http:// to any other host navigator.mediaDevices is undefined.',
+    ...(realDevices
+      ? {
+          os_note:
+            'Real devices are in use, so the operating system must also allow them. Windows: Settings > Privacy & security > Camera (and Microphone), with "Let desktop apps access your camera" (and microphone) on; Chromium is a desktop app. macOS: System Settings > Privacy & Security > Camera / Microphone for this Chromium. An OS refusal usually reaches the page as NotAllowedError. Pass fake_devices:true to avoid hardware entirely.',
+        }
+      : {}),
+  };
+}
+
 export async function launch(
   ctx: OpsContext,
   args: {
@@ -133,6 +184,7 @@ export async function launch(
     capture_netlog?: boolean;
     window_size?: { width: number; height: number };
     extra_args?: string[];
+    media?: MediaArgs;
   },
 ): Promise<Record<string, unknown>> {
   const instance = await ctx.registry.launch({
@@ -143,8 +195,10 @@ export async function launch(
     ...(args.capture_netlog ? { netLog: true } : {}),
     ...(args.window_size ? { windowSize: args.window_size } : {}),
     ...(args.extra_args ? { args: args.extra_args } : {}),
+    ...(args.media ? { media: toMediaOptions(args.media) } : {}),
     ...(args.url ? { urls: [args.url] } : {}),
   });
+  const media = mediaReport(instance);
 
   /*
    * `navigated_to: args.url` echoed the request as though it were an outcome.
@@ -165,6 +219,7 @@ export async function launch(
     user_data_dir: instance.userDataDir,
     extensions_loaded: instance.extensions,
     netlog_path: instance.netLogPath,
+    ...(media ? { media } : {}),
     tabs: instance.targets.listPages().length,
     ...(args.url
       ? landed
@@ -341,6 +396,7 @@ export async function status(
   }
   const byType: Record<string, number> = {};
   for (const target of targets) byType[target.type] = (byType[target.type] ?? 0) + 1;
+  const media = mediaReport(instance);
 
   return {
     browser_id: instance.id,
@@ -356,6 +412,7 @@ export async function status(
     version: instance.version,
     extensions: instance.extensions,
     netlog_path: instance.netLogPath,
+    ...(media ? { media } : {}),
     uptime_ms: Date.now() - instance.launchedAt,
     targets_by_type: byType,
     /*
@@ -475,6 +532,7 @@ export async function reveal(
   const wasHeadless = instance.headless;
   const profile = instance.profile;
   const extensions = instance.extensions;
+  const media = instance.media;
 
   // headless === false means a window is already on screen; relaunching would
   // throw away the live page for nothing. null (attached) never reaches here.
@@ -505,6 +563,9 @@ export async function reveal(
     profile,
     headless: false,
     ...(extensions.length > 0 ? { extensions } : {}),
+    // Media switches are fixed at process start too; losing them here would
+    // turn a working capture flow back into a prompt the human never asked for.
+    ...(media ? { media } : {}),
     ...(args.window_size ? { windowSize: args.window_size } : {}),
     ...(urls.length > 0 ? { urls } : {}),
   };

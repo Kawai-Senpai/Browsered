@@ -508,17 +508,75 @@ export async function setIdleState(
   return { target_id: target.handle, user_active: isUserActive, screen_unlocked: isScreenUnlocked };
 }
 
+/**
+ * Web permission names (the ones navigator.permissions.query and Playwright
+ * use) mapped to CDP's Browser.PermissionType. CDP rejects "camera" and
+ * "microphone" outright - it calls them videoCapture and audioCapture - so a
+ * caller using the web name got a protocol error instead of a grant. Names not
+ * listed here are passed through, which keeps every CDP name working as before.
+ */
+const PERMISSION_ALIASES: Record<string, string> = {
+  camera: 'videoCapture',
+  microphone: 'audioCapture',
+  'display-capture': 'displayCapture',
+  'clipboard-read': 'clipboardReadWrite',
+  'clipboard-write': 'clipboardSanitizedWrite',
+  'background-sync': 'backgroundSync',
+  'background-fetch': 'backgroundFetch',
+  'periodic-background-sync': 'periodicBackgroundSync',
+  'midi-sysex': 'midiSysex',
+  'storage-access': 'storageAccess',
+  'top-level-storage-access': 'topLevelStorageAccess',
+  'local-fonts': 'localFonts',
+  'idle-detection': 'idleDetection',
+  'window-management': 'windowManagement',
+  'screen-wake-lock': 'wakeLockScreen',
+  'system-wake-lock': 'wakeLockSystem',
+  'payment-handler': 'paymentHandler',
+  'persistent-storage': 'durableStorage',
+  'speaker-selection': 'speakerSelection',
+  'keyboard-lock': 'keyboardLock',
+  'pointer-lock': 'pointerLock',
+  accelerometer: 'sensors',
+  gyroscope: 'sensors',
+  magnetometer: 'sensors',
+  'ambient-light-sensor': 'sensors',
+};
+
+/** CDP permission types for a list of web or CDP names, de-duplicated in order. */
+export function toProtocolPermissions(names: string[]): string[] {
+  return [...new Set(names.map((name) => PERMISSION_ALIASES[name] ?? name))];
+}
+
 export async function grantPermissions(
   ctx: OpsContext,
   args: EmulationArgs & { permissions: string[]; origin?: string },
 ): Promise<Record<string, unknown>> {
   const instance = await ctx.registry.resolve(args.browser_id);
   instance.requireControl('permissions.grant');
-  await instance.browserSession.send('Browser.grantPermissions', {
-    permissions: args.permissions,
-    ...(args.origin ? { origin: args.origin } : {}),
-  });
-  return { browser_id: instance.id, granted: args.permissions, origin: args.origin ?? '(all origins)' };
+  const permissions = toProtocolPermissions(args.permissions);
+  try {
+    await instance.browserSession.send('Browser.grantPermissions', {
+      permissions,
+      ...(args.origin ? { origin: args.origin } : {}),
+    });
+  } catch (err) {
+    throw new AgentBrowserError(
+      'bad_permission',
+      `Chromium refused to grant [${permissions.join(', ')}]: ${(err as Error).message}. ` +
+        `Use web names (${Object.keys(PERMISSION_ALIASES).slice(0, 6).join(', ')}, ...) or CDP Browser.PermissionType names (videoCapture, audioCapture, geolocation, notifications, ...).`,
+      { requested: args.permissions, sent: permissions },
+    );
+  }
+  const mapped = Object.fromEntries(
+    args.permissions.filter((name) => PERMISSION_ALIASES[name]).map((name) => [name, PERMISSION_ALIASES[name]]),
+  );
+  return {
+    browser_id: instance.id,
+    granted: permissions,
+    ...(Object.keys(mapped).length ? { mapped } : {}),
+    origin: args.origin ?? '(all origins)',
+  };
 }
 
 export async function resetPermissions(

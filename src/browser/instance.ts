@@ -14,7 +14,13 @@ import { mintId } from '../util/ids.js';
 import { createLogger, type Logger } from '../util/logger.js';
 import { paths } from '../util/paths.js';
 import type { FaultRule } from './faults.js';
-import { killBrowserProcess, launchBrowser, type LaunchOptions } from './launcher.js';
+import {
+  killBrowserProcess,
+  launchBrowser,
+  mediaPermissions,
+  type LaunchOptions,
+  type MediaOptions,
+} from './launcher.js';
 import { TargetManager, type ManagedTarget } from './target-manager.js';
 
 export type BrowserStatus = 'starting' | 'ready' | 'closing' | 'closed';
@@ -41,6 +47,8 @@ export interface BrowserInstanceInit {
   headless: boolean | null;
   extensions: string[];
   netLogPath: string | null;
+  /** Media capture this browser was launched with. null when none, or when attached. */
+  media: MediaOptions | null;
   stores: Stores;
   config: DaemonConfig;
 }
@@ -61,6 +69,10 @@ export class BrowserInstance {
   readonly headless: boolean | null;
   readonly extensions: string[];
   readonly netLogPath: string | null;
+  /** Launch-time media capture switches, fixed for the life of the process. */
+  readonly media: MediaOptions | null;
+  /** CDP permissions actually granted for media at launch. */
+  mediaPermissionsGranted: string[] = [];
   readonly launchedAt = Date.now();
 
   readonly connection: CdpConnection;
@@ -136,6 +148,7 @@ export class BrowserInstance {
     this.managed = init.managed;
     this.extensions = init.extensions;
     this.netLogPath = init.netLogPath;
+    this.media = init.media;
     this.stores = init.stores;
     this.config = init.config;
     this.process = init.process;
@@ -172,7 +185,14 @@ export class BrowserInstance {
     stores: Stores,
     config: DaemonConfig,
   ): Promise<BrowserInstance> {
-    const launched = await launchBrowser({ ...options, chromiumPath: options.chromiumPath ?? config.chromiumPath });
+    // A launch that names its own media replaces the configured default whole,
+    // so media:{} is how one launch opts out of a default.
+    const media = options.media ?? config.media ?? undefined;
+    const launched = await launchBrowser({
+      ...options,
+      chromiumPath: options.chromiumPath ?? config.chromiumPath,
+      ...(media ? { media } : {}),
+    });
     const instance = new BrowserInstance({
       browserId: mintId('br'),
       profile: options.profile,
@@ -185,6 +205,7 @@ export class BrowserInstance {
       headless: options.headless === true,
       extensions: launched.extensionsLoaded,
       netLogPath: launched.netLogPath,
+      media: media ?? null,
       stores,
       config,
     });
@@ -192,6 +213,7 @@ export class BrowserInstance {
       instance.handleGone(`chromium exited (code=${code} signal=${signal})`);
     });
     await instance.start();
+    await instance.grantMediaPermissions();
     return instance;
   }
 
@@ -224,6 +246,7 @@ export class BrowserInstance {
       headless: null,
       extensions: [],
       netLogPath: null,
+      media: null,
       stores,
       config,
     });
@@ -255,6 +278,29 @@ export class BrowserInstance {
       this.log.debug(`capsule downloads routed to ${downloadPath}`);
     } catch (err) {
       this.log.debug('Browser.setDownloadBehavior failed; downloads use the browser default', err);
+    }
+  }
+
+  /**
+   * Grant camera and microphone over CDP for a media launch.
+   *
+   * The launch switch answers the prompt; the grant is what makes
+   * navigator.permissions.query report "granted" instead of "prompt", which a
+   * page may check before it ever calls getUserMedia. Best-effort, like the
+   * download routing above: the switch alone still gets past the prompt, and
+   * losing a running browser over the grant would be the worse outcome.
+   */
+  private async grantMediaPermissions(): Promise<void> {
+    const permissions = mediaPermissions(this.media ?? undefined);
+    if (!permissions.length) return;
+    try {
+      await this.browserSession.send('Browser.grantPermissions', {
+        permissions,
+        ...(this.media?.origin ? { origin: this.media.origin } : {}),
+      });
+      this.mediaPermissionsGranted = permissions;
+    } catch (err) {
+      this.log.warn('Browser.grantPermissions for media failed; the launch switch still answers the prompt', err);
     }
   }
 

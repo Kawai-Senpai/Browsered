@@ -130,7 +130,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'browser.launch',
     description:
-      'Launch a new Chromium with a persistent profile. Not usually needed: any tool auto-launches a browser when none is running. When url is given, the result reports what actually committed (landed.url, landed.title, landed.http_status) rather than echoing the request.',
+      'Launch a new Chromium with a persistent profile. Not usually needed: any tool auto-launches a browser when none is running. Needed for camera, microphone or screen capture: pass media (e.g. {camera:true, microphone:true, fake_devices:true, screen:true}) so getUserMedia/getDisplayMedia prompts and the screen picker are answered automatically. When url is given, the result reports what actually committed (landed.url, landed.title, landed.http_status) rather than echoing the request.',
     schema: {
       profile: z.string().optional().describe('Named persistent profile. Reused across runs.'),
       headless: z.boolean().optional().describe('Default false: a visible window a human can also use.'),
@@ -143,6 +143,27 @@ export const TOOLS: ToolDef[] = [
       capture_netlog: z.boolean().optional().describe('Also record Chromium NetLog (DNS, sockets, TLS).'),
       window_size: z.object({ width: z.number(), height: z.number() }).optional(),
       extra_args: z.array(z.string()).optional(),
+      media: z
+        .object({
+          camera: z.boolean().optional().describe('Accept getUserMedia camera requests with no prompt, and grant the camera permission.'),
+          microphone: z.boolean().optional().describe('Accept getUserMedia microphone requests with no prompt, and grant the microphone permission.'),
+          screen: z.boolean().optional().describe('getDisplayMedia auto-picks a screen instead of showing the picker. Which screen is not controllable.'),
+          screen_source: z
+            .string()
+            .optional()
+            .describe('Auto-pick the capture source whose title contains this text, e.g. "Entire screen" (English UI). Implies screen.'),
+          fake_devices: z
+            .boolean()
+            .optional()
+            .describe('Replace real hardware with Chromium\'s synthetic camera and microphone. Repeatable, and needs no OS permission.'),
+          video_file: z.string().optional().describe('Absolute path to a .y4m or .mjpeg file played as the camera. Implies fake_devices.'),
+          audio_file: z.string().optional().describe('Absolute path to a .wav file played (looping) as the microphone. Implies fake_devices.'),
+          origin: z.string().optional().describe('Scope the camera/microphone grant to this origin. Default: every origin.'),
+        })
+        .optional()
+        .describe(
+          'Camera, microphone and screen capture without prompts, for testing getUserMedia/getDisplayMedia flows. Fixed at process start: to change it, close and relaunch. Replaces the daemon\'s configured media default; media:{} launches without any. The page must be a secure context (https, or http://localhost).',
+        ),
     },
     handler: op(browserOps.launch),
   },
@@ -1978,8 +1999,13 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'permissions.grant',
-    description: 'Grant browser permissions, e.g. ["geolocation", "notifications"], optionally scoped to one origin.',
-    schema: { ...browserId, permissions: z.array(z.string()), origin: z.string().optional() },
+    description:
+      'Grant browser permissions, e.g. ["geolocation", "notifications", "camera", "microphone"], optionally scoped to one origin. Web names are mapped to CDP types (camera -> videoCapture, microphone -> audioCapture); CDP names pass through. Granting camera/microphone lets getUserMedia resolve with no prompt, but supplies no device; the getDisplayMedia screen picker cannot be granted away at all. For both, launch with browser.launch{media}.',
+    schema: {
+      ...browserId,
+      permissions: z.array(z.string()).describe('Web permission names or CDP Browser.PermissionType names.'),
+      origin: z.string().optional(),
+    },
     handler: op(emulationOps.grantPermissions),
   },
   {

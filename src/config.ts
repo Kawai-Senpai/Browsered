@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import type { MediaOptions } from './browser/launcher.js';
 import type { LogLevel } from './util/logger.js';
 import { paths } from './util/paths.js';
 
@@ -46,6 +47,11 @@ export interface DaemonConfig {
   autoLaunchProfile: string;
   /** Auto-launched browsers are headed by default: the point is a visible browser. */
   autoLaunchHeadless: boolean;
+  /**
+   * Camera, microphone and screen capture for every browser the daemon launches,
+   * unless a launch passes its own `media`. null (the default) adds nothing.
+   */
+  media: MediaOptions | null;
 }
 
 export const DEFAULT_CONFIG: DaemonConfig = {
@@ -69,6 +75,7 @@ export const DEFAULT_CONFIG: DaemonConfig = {
   autoLaunch: true,
   autoLaunchProfile: 'default',
   autoLaunchHeadless: false,
+  media: null,
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -84,6 +91,29 @@ export function mergeConfig(base: DaemonConfig, patch: unknown): DaemonConfig {
     merged.recorder = { ...base.recorder, ...(recorder as Partial<RecorderConfig>) };
   }
   return merged;
+}
+
+/**
+ * AGENTBROWSER_MEDIA: a comma-separated list of the on/off media switches, e.g.
+ * "camera,microphone,screen,fake_devices". File paths and a screen source name
+ * do not fit a flat list, so those belong in config.json's `media` instead.
+ */
+export function parseMediaEnv(value: string): MediaOptions {
+  const media: MediaOptions = {};
+  for (const raw of value.split(',')) {
+    const name = raw.trim();
+    if (!name) continue;
+    if (name === 'camera') media.camera = true;
+    else if (name === 'microphone') media.microphone = true;
+    else if (name === 'screen') media.screen = true;
+    else if (name === 'fake_devices') media.fakeDevices = true;
+    else {
+      throw new Error(
+        `AGENTBROWSER_MEDIA has an unknown entry "${name}". Use a comma-separated list of: camera, microphone, screen, fake_devices.`,
+      );
+    }
+  }
+  return media;
 }
 
 export function loadConfig(overrides?: Partial<DaemonConfig>): DaemonConfig {
@@ -106,6 +136,9 @@ export function loadConfig(overrides?: Partial<DaemonConfig>): DaemonConfig {
   // an MCP client's `command`/`args`.
   if (process.env.AGENTBROWSER_HEADLESS) {
     config = { ...config, autoLaunchHeadless: process.env.AGENTBROWSER_HEADLESS !== '0' };
+  }
+  if (process.env.AGENTBROWSER_MEDIA) {
+    config = { ...config, media: parseMediaEnv(process.env.AGENTBROWSER_MEDIA) };
   }
   if (overrides) config = mergeConfig(config, overrides);
   return config;
