@@ -479,6 +479,42 @@ async function triggerLazyContent(instance: BrowserInstance, target: ManagedTarg
   }
 }
 
+async function pageIsHidden(instance: BrowserInstance, target: ManagedTarget): Promise<boolean> {
+  try {
+    const { result } = await evaluate(instance, target, {
+      expression: 'document.visibilityState',
+      returnByValue: true,
+      awaitPromise: false,
+    });
+    return result.value === 'hidden';
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve after `count` animation frames, or after `timeoutMs` if frames never come. */
+async function waitForFrames(
+  instance: BrowserInstance,
+  target: ManagedTarget,
+  count: number,
+  timeoutMs: number,
+): Promise<void> {
+  try {
+    await evaluate(instance, target, {
+      expression: `new Promise((done) => {
+        const stop = setTimeout(done, ${timeoutMs});
+        let left = ${count};
+        const tick = () => { if (--left <= 0) { clearTimeout(stop); done(true); } else requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      })`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  } catch {
+    /* Best effort: a capture without the wait beats no capture. */
+  }
+}
+
 /** Cheap post-mortem for a capture that never came back. */
 async function captureDiagnostics(
   instance: BrowserInstance,
@@ -589,6 +625,24 @@ export async function screenshot(
   }
 
   /*
+   * A hidden page (a background tab) paints no new frames: Page.captureScreenshot
+   * then returns whatever was on screen when it was last visible, often a
+   * loader or skeleton long since replaced, and requestAnimationFrame-driven
+   * motion stays frozen mid-entrance. Focus emulation alone does not make
+   * Chromium paint it, and forcing a capture beyond the viewport hangs, so the
+   * tab is brought to the front for the capture and the tab that was in front
+   * before is restored afterwards. (Covered windows are already handled by the
+   * --disable-backgrounding-occluded-windows launch flag.)
+   */
+  const wasHidden = await pageIsHidden(instance, target);
+  let restoreTo: string | null = null;
+  if (wasHidden) {
+    restoreTo = await currentActiveTarget(instance);
+    await instance.browserSession.trySend('Target.activateTarget', { targetId: target.cdpTargetId });
+    await waitForFrames(instance, target, 3, 2_000);
+  }
+
+  /*
    * Settle last, after the lazy sweep and the highlight: scrolling and overlays
    * both start animations of their own.
    */
@@ -623,6 +677,10 @@ export async function screenshot(
     throw error;
   } finally {
     if (args.highlight) await target.session.trySend('Overlay.hideHighlight');
+    if (restoreTo && restoreTo !== target.handle) {
+      const previous = instance.targets.get(restoreTo);
+      if (previous) await instance.browserSession.trySend('Target.activateTarget', { targetId: previous.cdpTargetId });
+    }
   }
   const buffer = Buffer.from(data, 'base64');
   const mime = format === 'png' ? 'image/png' : format === 'jpeg' ? 'image/jpeg' : 'image/webp';
@@ -647,6 +705,9 @@ export async function screenshot(
     ...(scale === 1 ? {} : { scaled: Number(scale.toFixed(3)) }),
     ...(sweep ? { scrolled_through: true } : {}),
     ...(highlighted ? { highlighted } : {}),
+    ...(wasHidden
+      ? { rendered_in_background: true, note: 'The tab was in the background, so it was brought to the front for this capture (the frame is current) and the previous tab was put back.' }
+      : {}),
     ...(animationsRunning > 0
       ? {
           warning:
