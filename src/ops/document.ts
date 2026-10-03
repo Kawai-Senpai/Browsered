@@ -39,11 +39,11 @@ import {
   type DocumentSort,
 } from '../store/document-store.js';
 import { unj } from '../store/db.js';
-import { AgentBrowserError } from '../util/errors.js';
+import { AgentBrowserError, TimeoutError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { evaluate } from './element.js';
-import type { OpsContext } from './context.js';
-import { navigate, VISIBLE_TEXT_FN } from './page.js';
+import type { OpsContext, ToolRun } from './context.js';
+import { navigate, resetTarget, VISIBLE_TEXT_FN } from './page.js';
 import { parseSince } from './context.js';
 
 const log = createLogger('ops:document');
@@ -347,7 +347,7 @@ export interface CaptureOptions {
   max_links?: number;
 }
 
-interface Captured {
+export interface Captured {
   url: string;
   title: string | null;
   text: string;
@@ -360,7 +360,7 @@ interface Captured {
 }
 
 /** Everything a saved document is made of, read from one page in one pass. */
-async function capture(
+export async function capture(
   instance: BrowserInstance,
   target: ManagedTarget,
   options: CaptureOptions,
@@ -448,7 +448,7 @@ async function capture(
 }
 
 /** Persist a capture: text to an artifact, metadata and index to SQLite. */
-function persist(
+export function persist(
   ctx: OpsContext,
   captured: Captured,
   extra: {
@@ -1056,7 +1056,9 @@ export async function crawl(
     wait_until?: 'load' | 'domcontentloaded' | 'networkidle' | 'none';
     timeout_ms?: number;
     stop_after_matches?: number;
+    page_timeout_ms?: number;
   },
+  run?: ToolRun,
 ): Promise<Record<string, unknown>> {
   const start = (() => {
     try {
@@ -1075,9 +1077,37 @@ export async function crawl(
   const shouldSave = args.save !== false;
   const pauseMs = Math.min(Math.max(args.delay_ms ?? 0, 0), 10_000);
 
+  const pageTimeout = Math.min(Math.max(args.page_timeout_ms ?? 60_000, 1_000), 600_000);
+
   const instance = await ctx.registry.resolve(args.browser_id);
   instance.requireControl('doc.crawl');
-  const target = await instance.resolvePageOrOpen(args.target_id);
+  let target = await instance.resolvePageOrOpen(args.target_id);
+
+  /*
+   * One page must not be able to hang the crawl: navigation and capture run
+   * against a hard deadline, and a page that misses it gets its tab reset so
+   * the next URL starts on a renderer that answers.
+   */
+  const withDeadline = async <T>(url: string, work: Promise<T>): Promise<T> => {
+    work.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new TimeoutError(`page ${url}`, pageTimeout)), pageTimeout);
+        }),
+      ]);
+    } catch (err) {
+      if (err instanceof TimeoutError) {
+        const reset = await resetTarget(ctx, { browser_id: instance.id, target_id: target.handle, mode: 'auto' });
+        target = instance.resolvePage(String(reset.target_id));
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 
   const crawlRow = ctx.stores.documents.createCrawl({
     startUrl: args.url,
@@ -1106,17 +1136,24 @@ export async function crawl(
 
   try {
     while (queue.length > 0 && pages.length < maxPages) {
+      if (run?.signal?.aborted) {
+        stopped = 'cancelled by the client; pages visited so far are saved';
+        break;
+      }
       const item = queue.shift()!;
 
       let httpStatus: number | null = null;
       try {
-        const nav = (await navigate(ctx, {
-          browser_id: instance.id,
-          target_id: target.handle,
-          url: item.url,
-          wait_until: args.wait_until ?? 'load',
-          ...(args.timeout_ms === undefined ? {} : { timeout_ms: args.timeout_ms }),
-        })) as Record<string, unknown>;
+        const nav = (await withDeadline(
+          item.url,
+          navigate(ctx, {
+            browser_id: instance.id,
+            target_id: target.handle,
+            url: item.url,
+            wait_until: args.wait_until ?? 'load',
+            ...(args.timeout_ms === undefined ? {} : { timeout_ms: args.timeout_ms }),
+          }),
+        )) as Record<string, unknown>;
         if (nav.committed === false) throw new Error(String(nav.error ?? 'no document committed'));
         httpStatus = (nav.http_status as number | undefined) ?? null;
       } catch (err) {
@@ -1126,7 +1163,7 @@ export async function crawl(
 
       let captured: Captured;
       try {
-        captured = await capture(instance, target, args);
+        captured = await withDeadline(item.url, capture(instance, target, args));
       } catch (err) {
         errors.push({ url: item.url, depth: item.depth, error: (err as Error).message });
         continue;
@@ -1191,6 +1228,7 @@ export async function crawl(
         pagesSaved: saved,
         matchesFound: allMatches.length,
       });
+      run?.progress?.(pages.length, Math.min(maxPages, pages.length + queue.length), landed);
 
       if (args.stop_after_matches && allMatches.length >= args.stop_after_matches) {
         stopped = `stop_after_matches (${args.stop_after_matches}) reached`;

@@ -10,6 +10,16 @@ export interface OpsContext {
   config: DaemonConfig;
 }
 
+/**
+ * What a long-running op may use from the call that started it: the client's
+ * cancellation, and a way to report progress while it works. Both are optional
+ * because workflow.run and the CLI call ops without an MCP request behind them.
+ */
+export interface ToolRun {
+  signal?: AbortSignal;
+  progress?: (done: number, total?: number, message?: string) => void;
+}
+
 /** Common shape for tools that address a browser and optionally a target. */
 export interface TargetRef {
   browser_id?: string;

@@ -1,5 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { OpsContext } from '../ops/context.js';
+import type { OpsContext, ToolRun } from '../ops/context.js';
 import { AgentBrowserError, describeError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { z } from 'zod';
@@ -40,6 +40,41 @@ function renderResult(payload: Record<string, unknown>): ToolResult {
 
   content.push({ type: 'text', text: JSON.stringify(payload, null, 2) });
   return { content };
+}
+
+/** The slice of the SDK's per-request extra that long-running ops use. */
+interface ToolExtra {
+  signal?: AbortSignal;
+  _meta?: { progressToken?: string | number };
+  sendNotification?: (notification: { method: string; params: Record<string, unknown> }) => Promise<void>;
+}
+
+/**
+ * Turn the request's extra into what ops see. Progress is only sent when the
+ * client asked for it with a progressToken; a client that did not would be
+ * receiving notifications it has no request to attach to.
+ */
+function toolRun(extra: ToolExtra | undefined): ToolRun {
+  const token = extra?._meta?.progressToken;
+  const send = extra?.sendNotification;
+  return {
+    ...(extra?.signal ? { signal: extra.signal } : {}),
+    ...(token !== undefined && send
+      ? {
+          progress: (done: number, total?: number, message?: string) => {
+            send({
+              method: 'notifications/progress',
+              params: {
+                progressToken: token,
+                progress: done,
+                ...(total === undefined ? {} : { total }),
+                ...(message === undefined ? {} : { message }),
+              },
+            }).catch((err) => log.debug('progress notification failed', err));
+          },
+        }
+      : {}),
+  };
 }
 
 function renderError(err: unknown): ToolResult {
@@ -190,7 +225,7 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         },
       },
       // The SDK validates against the schema, so args arrive already parsed.
-      (async (args: Record<string, unknown>) => {
+      (async (args: Record<string, unknown>, extra: ToolExtra) => {
         const started = Date.now();
         /*
          * A QA recording, when armed, needs the semantic locator of the element
@@ -202,7 +237,7 @@ export function createMcpServer(ctx: OpsContext): McpServer {
          */
         const pending = await beforeAction(ctx, tool.name, args ?? {});
         try {
-          const payload = await tool.handler(ctx, args ?? {});
+          const payload = await tool.handler(ctx, args ?? {}, toolRun(extra));
           afterAction(pending, payload);
           log.debug(`${tool.name} ok in ${Date.now() - started}ms`);
           return renderResult(payload);

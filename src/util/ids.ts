@@ -26,6 +26,7 @@ export type Prefix =
   | 'doc' // saved page document
   | 'crl' // crawl run
   | 'dmx' // document match hit
+  | 'bat' // batch page visit
   | 'blob'; // stored payload
 
 const counters = new Map<Prefix, number>();

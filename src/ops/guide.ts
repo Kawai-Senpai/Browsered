@@ -186,6 +186,7 @@ const FAMILY_NOTES: Record<string, string> = {
     'device.preset sets viewport, scale factor, user agent and touch together. Setting only the viewport leaves the user agent saying desktop, which some apps branch on.',
   app: 'Reads the state the application is holding, which is a different question from what the platform reported. console.exceptions can only show what reached window.onerror, and every major data-fetching library (TanStack Query, SWR, Redux Toolkit, Apollo) catches what its own code paths throw and stores it as state instead. That makes an empty console compatible with a thoroughly broken app. app.error_state walks React fibers and store objects and returns what is actually held, with the message and stack the console never printed; it also reports whether the origin is a secure context, because a page on plain http:// silently loses crypto.randomUUID, clipboard and service workers that exist on localhost. app.diagnose_interaction clicks a control and reports what the application did about it - handler attached, handler threw, request initiated, input consumed - because page.click answers whether the DOM moved, and unrelated re-renders make that true for a click that did nothing.',
   doc: 'The only family whose answers mostly do not need a browser. Reading a documentation site costs a navigation, a scroll sweep and an extraction every single time, and none of it is cached, so the same reference page is fetched again for the next question. doc.save captures a page once - scrolling until the lazily-revealed sections are actually in the DOM, keeping headings, code fences, tables and link targets as Markdown, dropping the nav and footer that would otherwise be saved on every page of the site - and from then on doc.search answers from disk across everything saved. Saving is keyed on the canonical URL, so a #fragment or a utm_ parameter does not fork the library and a refresh updates in place. doc.crawl is the bulk form: point it at a starting page, give it a depth and a scope, and it walks the site saving as it goes, with find rules matching regex, text or CSS selectors on every page - which makes it "search a whole site for X" as much as an importer. Before fetching anything, doc.list(group_by:"site") says what is already there.',
+  file: 'Writes files on the daemon host without a shell. file.write takes text, JSON, an artifact or a page.visit_batch run, sanitizes the file name for every OS, and by default writes "name (2).ext" rather than replacing an existing file. Prefer it to echoing content through a shell in chunks, which breaks on quotes and overwrites silently.',
   qa: 'Hands an exploration to a test harness. qa.record_start arms a recorder that captures each mutating page action with its semantic locator resolved *before* the action runs, which is the only moment that answer is reliable. qa.evidence then reads the recording browserd was keeping anyway, so the window is chosen after the flow, once you know the question worth asking. One rule governs the family: it reports what happened and never decides what should have happened, so everything assertion-shaped comes back as a candidate with a null oracle, and qa.scenario_draft refuses to call itself ready to compile until a requirement is attached.',
 };
 
@@ -324,6 +325,27 @@ const TOOL_NOTES: Record<string, ToolNote> = {
       'On marketing pages the first screenful of text is often an invisible SEO block; pass visible_only:true.',
       'A few hundred characters and exact, against tens of kilobytes that must be judged by eye. Reach for this before page.screenshot.',
     ],
+  },
+  'page.visit_batch': {
+    when: 'More than a handful of URLs to visit and read: a list of job posts, product pages, search results. Use it instead of a page.navigate + page.extract_text loop.',
+    how: 'Opens its own background tabs (concurrency, default 2) and gives every page a hard deadline covering navigation and extraction. A page that misses it is recorded as timeout and its tab is reset before the next URL. The run lives in the daemon, so the call can return before it finishes without losing anything.',
+    caveats: [
+      'The call returns after wait_ms (default 60000) with whatever is done. status "running" is not a failure: poll page.batch_status, or wait_ms there to block for more.',
+      'Text is capped per page by max_chars (text_length gives the real size). For full pages use extract:"markdown" with save:true and read them from doc.search.',
+      'Runs are held in memory. A finished run is also saved as a JSON artifact; a daemon restart forgets runs still in progress.',
+    ],
+    examples: [
+      'page.visit_batch { "urls": ["https://a.example/1", "https://a.example/2"], "expression": "document.querySelector(\'h1\')?.textContent", "page_timeout_ms": 20000 }',
+      'page.batch_status { "batch_id": "bat_1a2b3c", "wait_ms": 60000, "include_text": false }',
+      'file.write { "batch_id": "bat_1a2b3c", "dir": "C:/out", "filename": "results.json" }',
+    ],
+    see_also: ['page.batch_status', 'page.reset_target', 'doc.crawl', 'file.write'],
+  },
+  'page.reset_target': {
+    when: 'A tab stopped answering: evaluate, extract_text or navigate on it hangs until timeout. Reach for this before relaunching the browser.',
+    how: 'Fails the in-flight commands for that tab locally, sends Runtime.terminateExecution and Page.stopLoading, navigates to about:blank (or url), and probes the renderer. mode "auto" replaces the tab with a fresh one if the probe still gets no answer.',
+    caveats: ['When it recreates, the result carries a NEW target_id; the old one is gone.'],
+    see_also: ['page.visit_batch', 'page.close_tab'],
   },
   'page.audit_layout': {
     when: 'Responsive questions. "Does this break on mobile" is measurable, not a matter of opinion about a screenshot.',

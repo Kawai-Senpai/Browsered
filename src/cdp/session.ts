@@ -87,6 +87,11 @@ export class CdpSession {
     }
   }
 
+  /** Fail this session's in-flight commands now instead of at their timeout. */
+  cancelPending(reason: string): number {
+    return this.connection.cancelPending(this.sessionId, reason);
+  }
+
   on(method: string, handler: EventHandler): () => void {
     const off = this.connection.on(method, handler, this.sessionId);
     this.disposers.push(off);

@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import type { OpsContext } from '../ops/context.js';
+import type { OpsContext, ToolRun } from '../ops/context.js';
 import * as artifactOps from '../ops/artifact.js';
 import * as appStateOps from '../ops/appstate.js';
 import * as auditOps from '../ops/audit.js';
+import * as batchOps from '../ops/batch.js';
 import * as browserOps from '../ops/browser.js';
 import * as captureOps from '../ops/capture.js';
 import * as consoleOps from '../ops/console.js';
@@ -11,6 +12,7 @@ import * as debuggerOps from '../ops/debugger.js';
 import * as domOps from '../ops/dom.js';
 import * as emulationOps from '../ops/emulation.js';
 import * as faultOps from '../ops/faults.js';
+import * as fileOps from '../ops/file.js';
 import * as guideOps from '../ops/guide.js';
 import * as inspectorOps from '../ops/inspector.js';
 import * as jsOps from '../ops/js.js';
@@ -30,7 +32,7 @@ export interface ToolDef {
   name: string;
   description: string;
   schema: z.ZodRawShape;
-  handler: (ctx: OpsContext, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  handler: (ctx: OpsContext, args: Record<string, unknown>, run?: ToolRun) => Promise<Record<string, unknown>>;
   /** Tools that only read are safe under every control mode. */
   readOnly?: boolean;
 }
@@ -107,8 +109,10 @@ const semanticTarget = z.object({
 });
 
 /** Cast a typed op into the uniform handler shape. */
-export function op<A>(fn: (ctx: OpsContext, args: A) => Promise<Record<string, unknown>>): ToolDef['handler'] {
-  return (ctx, args) => fn(ctx, args as A);
+export function op<A>(
+  fn: (ctx: OpsContext, args: A, run?: ToolRun) => Promise<Record<string, unknown>>,
+): ToolDef['handler'] {
+  return (ctx, args, run) => fn(ctx, args as A, run);
 }
 
 export const TOOLS: ToolDef[] = [
@@ -272,6 +276,17 @@ export const TOOLS: ToolDef[] = [
     handler: op(pageOps.closeTab),
   },
   {
+    name: 'page.reset_target',
+    description:
+      'Unstick one tab without closing Chromium. Use when a tab stops answering (evaluate or navigate hangs until timeout). Fails the tab\'s in-flight commands, terminates its running script, stops loading and parks it on about:blank (or url). mode "auto" (default) escalates to replacing the tab with a fresh one if the renderer still does not answer; the result then carries a NEW target_id.',
+    schema: {
+      ...scope,
+      mode: z.enum(['auto', 'soft', 'recreate']).optional(),
+      url: z.string().optional().describe('Where to park the tab afterwards. Default about:blank.'),
+    },
+    handler: op(pageOps.resetTarget),
+  },
+  {
     name: 'page.navigate',
     description:
       'Navigate to a URL and wait for the load state. Reports the committed URL, the document title and its HTTP status, so a dev server serving a different project on the expected port is visible immediately.',
@@ -308,7 +323,44 @@ export const TOOLS: ToolDef[] = [
     schema: { ...scope, limit: z.number().optional() },
     handler: op(pageOps.history),
     readOnly: true,
+  },  {
+    name: 'page.visit_batch',
+    description:
+      'Visit many URLs and extract from each, with a separate status per page (ok / error / timeout) so one bad page never stalls the rest. Runs in background tabs (concurrency, default 2) with a hard per-page deadline; a page that misses it has its tab reset and the batch moves on. The run lives in the daemon: this call waits up to wait_ms, returns every finished page, and the rest keeps going - poll page.batch_status, so a client timeout never loses results. Sends MCP progress notifications per page when the client asks for them. extract: "text" (innerText, default), "visible_text", "markdown" (doc capture; save:true also stores each as a document), or "none"; expression runs your own JS per page and returns its value.',
+    schema: {
+      ...browserId,
+      urls: z.array(z.string()).describe('Absolute URLs, at most 500.'),
+      extract: z.enum(['text', 'visible_text', 'markdown', 'none']).optional(),
+      selector: z.string().optional().describe('Extract from this element instead of the whole page.'),
+      expression: z.string().optional().describe('JS evaluated on each page after load; its JSON value is returned as value.'),
+      max_chars: z.number().optional().describe('Text kept per page (default 4000, max 200000). text_length gives the full size.'),
+      concurrency: z.number().optional().describe('Parallel tabs, 1-6. Default 2.'),
+      page_timeout_ms: z.number().optional().describe('Hard deadline per page, navigation and extraction together. Default 45000.'),
+      wait_until: z.enum(['load', 'domcontentloaded', 'networkidle', 'none']).optional(),
+      settle_ms: z.number().optional().describe('Extra wait after load, before extracting.'),
+      delay_ms: z.number().optional().describe('Pause between pages per tab. Use it on someone else\'s server.'),
+      wait_ms: z.number().optional().describe('How long this call waits before returning what is done (default 60000, 0 returns at once).'),
+      save: z.boolean().optional().describe('With extract:"markdown", also store each page in the doc library.'),
+      collection: z.string().optional(),
+      label: z.string().optional(),
+    },
+    handler: op(batchOps.visitBatch),
   },
+  {
+    name: 'page.batch_status',
+    description:
+      'Results so far of a page.visit_batch run, finished or not. wait_ms waits for more progress first; cancel:true stops the run and keeps everything already visited. Omit batch_id to list recent runs.',
+    schema: {
+      batch_id: z.string().optional().describe('Batch handle (bat_*).'),
+      cancel: z.boolean().optional(),
+      wait_ms: z.number().optional(),
+      include_text: z.boolean().optional().describe('Default true. False returns statuses and values only.'),
+      offset: z.number().optional(),
+      limit: z.number().optional(),
+    },
+    handler: op(batchOps.batchStatus),
+  },
+
   {
     name: 'page.screenshot',
     description:
@@ -2190,6 +2242,23 @@ export const TOOLS: ToolDef[] = [
     schema: { artifact_id: z.string(), path: z.string() },
     handler: op(artifactOps.exportTo),
     readOnly: true,
+  },
+  {
+    name: 'file.write',
+    description:
+      'Write a file on the daemon host in one call, instead of echoing content through a shell in chunks. Source is exactly one of content (text, or base64 with encoding), json (pretty-printed), artifact_id, or batch_id (a page.visit_batch run\'s results, partial if still running). The file name is sanitized for every OS (illegal characters, reserved names like CON, trailing dots, length); the directory must be absolute and is created. on_conflict: "rename" (default, writes "name (2).ext"), "error", or "overwrite" (atomic replace).',
+    schema: {
+      path: z.string().optional().describe('Absolute path. Only the file name part is sanitized.'),
+      dir: z.string().optional().describe('Absolute directory; use with filename.'),
+      filename: z.string().optional().describe('File name, sanitized before use. Handy when it comes from a page title.'),
+      content: z.string().optional(),
+      encoding: z.enum(['utf8', 'base64']).optional(),
+      json: z.unknown().optional(),
+      artifact_id: z.string().optional(),
+      batch_id: z.string().optional(),
+      on_conflict: z.enum(['error', 'rename', 'overwrite']).optional(),
+    },
+    handler: op(fileOps.write),
   },
 
   /* ----------------------------------- QA --------------------------------- */

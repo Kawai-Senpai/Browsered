@@ -132,7 +132,7 @@ export const DOCUMENT_TOOLS: ToolDef[] = [
   {
     name: 'doc.crawl',
     description:
-      'Point at a starting page and explore outward, saving each page as a searchable document. Follows links breadth-first to max_depth, staying inside scope (same-origin by default) and honouring include/exclude regexes. find rules match regex, text or CSS selectors on every page and are stored with the results, so this doubles as "search a whole site for X". Every page is scrolled before extraction. Pages already saved are reused rather than re-fetched unless refresh:true.',
+      'Point at a starting page and explore outward, saving each page as a searchable document. Follows links breadth-first to max_depth, staying inside scope (same-origin by default) and honouring include/exclude regexes. find rules match regex, text or CSS selectors on every page and are stored with the results, so this doubles as "search a whole site for X". Every page is scrolled before extraction. Pages already saved are reused rather than re-fetched unless refresh:true. Each saved page is stored as it is visited, so a run cut short (client timeout or cancel) keeps everything it reached - doc.crawls shows it; progress notifications are sent per page when the client asks.',
     schema: {
       ...scope,
       ...capture,
@@ -151,6 +151,10 @@ export const DOCUMENT_TOOLS: ToolDef[] = [
       find: z.array(findRule).optional().describe('Regex / text / selector rules to run on every page.'),
       delay_ms: z.number().optional().describe('Pause between pages. Use it on someone else\'s server.'),
       stop_after_matches: z.number().optional().describe('Stop the crawl once this many find-hits have accumulated.'),
+      page_timeout_ms: z
+        .number()
+        .optional()
+        .describe('Hard deadline per page (default 60000). A page that misses it is recorded as an error, its tab is reset, and the crawl moves on.'),
       wait_until: z.enum(['load', 'domcontentloaded', 'networkidle', 'none']).optional(),
       timeout_ms: z.number().optional(),
     },

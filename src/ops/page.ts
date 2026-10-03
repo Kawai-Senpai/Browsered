@@ -110,7 +110,7 @@ export async function newTab(
   };
 }
 
-async function waitForTarget(
+export async function waitForTarget(
   instance: BrowserInstance,
   cdpTargetId: string,
   timeoutMs: number,
@@ -136,6 +136,100 @@ export async function closeTab(ctx: OpsContext, args: PageArgs): Promise<Record<
   instance.requireControl('page.close');
   await instance.browserSession.send('Target.closeTarget', { targetId: target.cdpTargetId });
   return { target_id: target.handle, closed: true };
+}
+
+/** Does the renderer answer at all? Any reply counts, including an exception. */
+async function responsive(target: ManagedTarget, timeoutMs: number): Promise<boolean> {
+  try {
+    const reply = await target.session.send<{ exceptionDetails?: unknown }>(
+      'Runtime.evaluate',
+      { expression: '1', returnByValue: true },
+      timeoutMs,
+    );
+    // A terminateExecution with nothing running is held for the next script,
+    // which is this probe. Probe once more so the caller's next evaluate is
+    // not the one that gets terminated.
+    if (reply.exceptionDetails) {
+      await target.session.send('Runtime.evaluate', { expression: '1', returnByValue: true }, timeoutMs);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Unstick one tab without closing Chromium.
+ *
+ * A page whose script never yields, or an evaluate whose promise never
+ * settles, leaves every later command on that tab queued behind it. "soft"
+ * fails the in-flight commands locally, terminates the running script, stops
+ * the load and parks the tab on about:blank (or `url`). "recreate" replaces
+ * the tab with a fresh one. "auto" (default) tries soft and escalates only if
+ * the renderer still does not answer.
+ */
+export async function resetTarget(
+  ctx: OpsContext,
+  args: PageArgs & { mode?: 'auto' | 'soft' | 'recreate'; url?: string },
+): Promise<Record<string, unknown>> {
+  const instance = await ctx.registry.resolve(args.browser_id);
+  instance.requireControl('page.reset_target');
+  const target = instance.resolvePage(args.target_id);
+  const mode = args.mode ?? 'auto';
+  const parkAt = args.url ?? 'about:blank';
+  const steps: string[] = [];
+
+  const cancelled = target.session.cancelPending('cancelled by page.reset_target');
+  if (cancelled) steps.push(`failed ${cancelled} in-flight command(s)`);
+
+  if (mode !== 'recreate') {
+    const attempt = async (method: string, params: Record<string, unknown> = {}): Promise<void> => {
+      try {
+        await target.session.send(method, params, 3_000);
+        steps.push(method);
+      } catch (err) {
+        steps.push(`${method} failed: ${(err as Error).message}`);
+      }
+    };
+    await attempt('Runtime.terminateExecution');
+    await attempt('Page.stopLoading');
+    await attempt('Page.navigate', { url: parkAt });
+    if (await responsive(target, 3_000)) {
+      return { target_id: target.handle, mode: 'soft', responsive: true, url: parkAt, steps };
+    }
+    steps.push('renderer still unresponsive');
+    if (mode === 'soft') {
+      return {
+        target_id: target.handle,
+        mode: 'soft',
+        responsive: false,
+        steps,
+        hint: 'Call again with mode:"recreate" to replace the tab.',
+      };
+    }
+  }
+
+  const { targetId } = await instance.browserSession.send<{ targetId: string }>(
+    'Target.createTarget',
+    { url: parkAt, background: true },
+  );
+  const fresh = await waitForTarget(instance, targetId, 10_000);
+  steps.push(`opened ${fresh.handle}`);
+  try {
+    await instance.browserSession.send('Target.closeTarget', { targetId: target.cdpTargetId }, 5_000);
+    steps.push(`closed ${target.handle}`);
+  } catch (err) {
+    steps.push(`closing ${target.handle} failed: ${(err as Error).message}`);
+  }
+  return {
+    target_id: fresh.handle,
+    replaced_target_id: target.handle,
+    mode: 'recreate',
+    responsive: await responsive(fresh, 5_000),
+    url: parkAt,
+    steps,
+    hint: `The old target_id is gone; use ${fresh.handle} from now on.`,
+  };
 }
 
 // ---------------------------------------------------------------- navigation
