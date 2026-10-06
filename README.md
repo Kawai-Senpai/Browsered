@@ -206,18 +206,20 @@ To write config yourself instead, the stdio entry is:
   "mcpServers": {
     "browserd": {
       "command": "node",
-      "args": ["<ABSOLUTE_PATH>/dist/cli.js"]
+      "args": ["<ABSOLUTE_PATH>/scripts/mcp-launch.mjs"]
     }
   }
 }
 ```
 
-Use an **absolute** path to `dist/cli.js`. Codex CLI uses TOML instead:
+Use an **absolute** path. `scripts/mcp-launch.mjs` starts `dist/cli.js` and, when
+`dist/` or `node_modules/` are missing (both are gitignored), reinstalls and
+rebuilds them first. Codex CLI uses TOML instead:
 
 ```toml
 [mcp_servers.browserd]
 command = "node"
-args = ["<ABSOLUTE_PATH>/dist/cli.js"]
+args = ["<ABSOLUTE_PATH>/scripts/mcp-launch.mjs"]
 ```
 
 ### 4. Verify before reporting success
@@ -380,7 +382,7 @@ Or add it by hand:
   "mcpServers": {
     "browserd": {
       "command": "node",
-      "args": ["/absolute/path/to/browserd/dist/cli.js"]
+      "args": ["/absolute/path/to/browserd/scripts/mcp-launch.mjs"]
     }
   }
 }

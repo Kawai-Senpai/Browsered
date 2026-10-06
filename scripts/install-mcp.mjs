@@ -15,7 +15,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const ENTRY = join(ROOT, 'dist', 'cli.js');
+// The launcher, not dist/cli.js: dist/ and node_modules/ are gitignored and
+// get wiped, and the launcher reinstalls and rebuilds them before starting.
+const ENTRY = join(ROOT, 'scripts', 'mcp-launch.mjs');
 const SERVER_NAME = 'browserd';
 
 const args = process.argv.slice(2);
@@ -184,11 +186,6 @@ function install(id) {
 }
 
 function main() {
-  if (!existsSync(ENTRY)) {
-    console.error(`browserd is not built yet.\n  cd "${ROOT}" && npm install && npm run build\n`);
-    process.exit(1);
-  }
-
   const entry = { mcpServers: { [SERVER_NAME]: serverEntry() } };
 
   if (flag('print')) {
