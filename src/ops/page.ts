@@ -609,6 +609,16 @@ async function waitForFrames(
   }
 }
 
+/** The visible area in CSS pixels, and where it sits in the document (the scroll offset). */
+async function visualViewport(
+  session: CdpSession,
+): Promise<{ pageX: number; pageY: number; clientWidth: number; clientHeight: number }> {
+  const metrics = await session.send<{
+    cssVisualViewport: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
+  }>('Page.getLayoutMetrics');
+  return metrics.cssVisualViewport;
+}
+
 /** Cheap post-mortem for a capture that never came back. */
 async function captureDiagnostics(
   instance: BrowserInstance,
@@ -683,17 +693,19 @@ export async function screenshot(
     params.clip = { x: 0, y: 0, width: size.width, height: size.height, scale };
     params.captureBeyondViewport = true;
   } else if (mode === 'viewport' && args.max_width) {
-    const metrics = await target.session.send<{
-      cssLayoutViewport: { clientWidth: number; clientHeight: number };
-    }>('Page.getLayoutMetrics');
-    const view = metrics.cssLayoutViewport;
+    // A clip is in document coordinates, so it must start at the scroll
+    // offset: { x: 0, y: 0 } on a scrolled page captures the top of the
+    // document, with position:fixed overlays shifted down by the scroll.
+    const view = await visualViewport(target.session);
     if (view.clientWidth > args.max_width) scale = args.max_width / view.clientWidth;
-    params.clip = { x: 0, y: 0, width: view.clientWidth, height: view.clientHeight, scale };
+    params.clip = { x: view.pageX, y: view.pageY, width: view.clientWidth, height: view.clientHeight, scale };
   } else if (mode === 'element') {
     const element = await resolveElement(instance, target, args);
     const box = await boundingBox(target.session, element.objectId);
     if (!box) throw new AgentBrowserError('not_visible', 'Element has no box to capture.');
-    params.clip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 };
+    // The box model is viewport-relative; the clip is document-relative.
+    const view = await visualViewport(target.session);
+    params.clip = { x: box.x + view.pageX, y: box.y + view.pageY, width: box.width, height: box.height, scale: 1 };
     params.captureBeyondViewport = true;
   }
 

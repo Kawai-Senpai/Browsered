@@ -21,6 +21,7 @@ import * as networkOps from '../ops/network.js';
 import * as qaOps from '../ops/qa.js';
 import * as pageOps from '../ops/page.js';
 import * as profilerOps from '../ops/profiler.js';
+import * as sensorOps from '../ops/sensors.js';
 import * as skeletonOps from '../ops/skeleton.js';
 import * as storageOps from '../ops/storage.js';
 import * as workflowOps from '../ops/workflow.js';
@@ -161,6 +162,10 @@ export const TOOLS: ToolDef[] = [
             .optional()
             .describe('Replace real hardware with Chromium\'s synthetic camera and microphone. Repeatable, and needs no OS permission.'),
           video_file: z.string().optional().describe('Absolute path to a .y4m or .mjpeg file played as the camera. Implies fake_devices.'),
+          image_file: z
+            .string()
+            .optional()
+            .describe('Absolute path to a .jpg/.jpeg shown by the camera as a still image, e.g. a photo of a QR code for a scanner to read. Implies fake_devices; not with video_file.'),
           audio_file: z.string().optional().describe('Absolute path to a .wav file played (looping) as the microphone. Implies fake_devices.'),
           origin: z.string().optional().describe('Scope the camera/microphone grant to this origin. Default: every origin.'),
         })
@@ -1939,7 +1944,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'device.orientation',
-    description: 'Rotate the emulated screen.',
+    description: 'Rotate the emulated screen between portrait and landscape. This is the screen, not the gyroscope: for the tilt angles a page reads from deviceorientation, use sensor.orientation.',
     schema: { ...scope, orientation: z.enum(['portrait', 'landscape']) },
     handler: op(emulationOps.setOrientation),
   },
@@ -2079,6 +2084,99 @@ export const TOOLS: ToolDef[] = [
     schema: {},
     handler: () => emulationOps.listScenarios(),
     readOnly: true,
+  },
+
+  /* --------------------------------- sensors ------------------------------ */
+  {
+    name: 'sensor.orientation',
+    description:
+      'Set how the device is held, so deviceorientation fires on a desktop: alpha (compass turn), beta (front-back tilt) and gamma (left-right tilt) in degrees, or a named pose (flat-face-up, portrait-upright, landscape-left, landscape-right). Angles given alongside a pose override it. For VR, aim the head instead: yaw/pitch/roll turn the head from the pose (default landscape-left, a phone in a headset), e.g. pitch:-30 to look down at a menu. This is the gyroscope a VR viewer, compass or tilt control reads.',
+    schema: {
+      ...scope,
+      alpha: z.number().optional().describe('Rotation about the vertical axis, 0-360.'),
+      beta: z.number().optional().describe('Front-back tilt, -180 to 180. 90 is upright in portrait (use 89: exactly 90 reads as null).'),
+      gamma: z.number().optional().describe('Left-right tilt, -90 to 90. -90 is upright in landscape with the top to the left.'),
+      pose: z.string().optional().describe('flat-face-up, portrait-upright, landscape-left (a phone in a VR headset) or landscape-right.'),
+      yaw: z.number().optional().describe('Head turn left (+) / right (-) in degrees, about the vertical.'),
+      pitch: z.number().optional().describe('Head tilt up (+) / down (-) in degrees.'),
+      roll: z.number().optional().describe('Head roll toward the right ear (+) in degrees.'),
+      absolute: z.boolean().optional().describe('Also drive deviceorientationabsolute / AbsoluteOrientationSensor.'),
+    },
+    handler: op(sensorOps.setOrientation),
+  },
+  {
+    name: 'sensor.motion',
+    description:
+      'Feed devicemotion: acceleration (m/s^2, gravity removed), acceleration_including_gravity (m/s^2) and rotation_rate (rad/s), each as {x,y,z}. For shake detection, step counters and anything reading the accelerometer or gyroscope rate.',
+    schema: {
+      ...scope,
+      acceleration: z.object({ x: z.number(), y: z.number(), z: z.number() }).optional(),
+      acceleration_including_gravity: z.object({ x: z.number(), y: z.number(), z: z.number() }).optional(),
+      rotation_rate: z.object({ x: z.number(), y: z.number(), z: z.number() }).optional(),
+    },
+    handler: op(sensorOps.setMotion),
+  },
+  {
+    name: 'sensor.path',
+    description:
+      'Play a head movement in real time, interpolated smoothly at up to 120 Hz, and return when it finishes: a preset (look-around, nod, spin, hold) relative to a base pose, or keyframes (head yaw/pitch/roll from the pose, or absolute angles). The only way to test smoothing, recentring and gaze-dwell logic, which a single static reading cannot exercise. For a realistic phone add jitter_deg / drift_deg_per_min (Chrome drops deviceorientation changes under 0.1 deg, so a perfectly still virtual phone looks dead) and motion:true to stream matching devicemotion. At most 60 seconds.',
+    schema: {
+      ...scope,
+      preset: z.string().optional().describe('look-around (yaw sweep), nod (pitch), spin (full turn), or hold (stay on the pose; pair with jitter/drift).'),
+      keyframes: z
+        .array(
+          z.object({
+            at_ms: z.number(),
+            yaw: z.number().optional(),
+            pitch: z.number().optional(),
+            roll: z.number().optional(),
+            alpha: z.number().optional(),
+            beta: z.number().optional(),
+            gamma: z.number().optional(),
+          }),
+        )
+        .optional()
+        .describe('Poses at times from the start: a head turn (yaw/pitch/roll, degrees from the base pose; pitch -30 looks down) or absolute angles (a missing one keeps the base pose value). Not both in one frame. Repeat a pose at two times to hold it, e.g. to dwell on a gaze target.'),
+      pose: z.string().optional().describe('Base pose. Default landscape-left, a phone in a headset.'),
+      amplitude: z.number().optional().describe('Degrees of swing for a preset. Default 45.'),
+      duration_ms: z.number().optional().describe('Length of a preset. Default 4000.'),
+      hz: z.number().optional().describe('Samples per second, 1-120. Default 60.'),
+      jitter_deg: z.number().optional().describe('RMS sensor shake added to every sample, 0-5 degrees. Real phones: about 0.02-0.3.'),
+      drift_deg_per_min: z.number().optional().describe('Slow yaw creep, as an uncorrected gyro has. Real phones: about 0.1-10.'),
+      motion: z.boolean().optional().describe('Also stream devicemotion consistent with the path: gravity in device axes and the rotation rate. Default false.'),
+      seed: z.number().optional().describe('Noise seed, so a noisy run replays identically. Default 1.'),
+      absolute: z.boolean().optional(),
+    },
+    handler: op(sensorOps.playPath),
+  },
+  {
+    name: 'sensor.set',
+    description:
+      'Set one raw sensor reading: accelerometer, linear-acceleration, gravity, gyroscope or magnetometer take x/y/z; absolute-orientation and relative-orientation take a quaternion x/y/z/w; ambient-light takes value in lux. available:false makes the page see the sensor as missing, which is how to test the "no gyroscope" fallback.',
+    schema: {
+      ...scope,
+      type: z.string().describe('accelerometer, linear-acceleration, gravity, gyroscope, magnetometer, absolute-orientation, relative-orientation, ambient-light.'),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      z: z.number().optional(),
+      w: z.number().optional(),
+      value: z.number().optional().describe('For ambient-light, in lux.'),
+      available: z.boolean().optional().describe('false reports the sensor as absent on this device.'),
+    },
+    handler: op(sensorOps.setSensor),
+  },
+  {
+    name: 'sensor.status',
+    description: 'Which sensors are overridden on this page, plus the available sensor types, poses and path presets, and what cannot be emulated (proximity; the camera is a browser.launch option).',
+    schema: { ...scope },
+    handler: op(sensorOps.status),
+    readOnly: true,
+  },
+  {
+    name: 'sensor.reset',
+    description: 'Stop overriding one sensor type, or all of them, and return the page to the real sensors.',
+    schema: { ...scope, type: z.string().optional() },
+    handler: op(sensorOps.reset),
   },
 
   /* --------------------------------- faults ------------------------------- */

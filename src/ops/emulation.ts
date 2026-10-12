@@ -1,5 +1,6 @@
 import { AgentBrowserError } from '../util/errors.js';
 import type { OpsContext } from './context.js';
+import { clearSensors } from './sensors.js';
 
 export interface EmulationArgs {
   browser_id?: string;
@@ -698,6 +699,7 @@ export async function resetAll(ctx: OpsContext, args: EmulationArgs): Promise<Re
     ['media', () => target.session.trySend('Emulation.setEmulatedMedia', { media: '', features: [] })],
     ['vision', () => target.session.trySend('Emulation.setEmulatedVisionDeficiency', { type: 'none' })],
     ['idle', () => target.session.trySend('Emulation.clearIdleOverride')],
+    ['sensors', () => clearSensors(instance, target)],
     ['cache', () => target.session.trySend('Network.setCacheDisabled', { cacheDisabled: false })],
     ['service_worker', () => target.session.trySend('Network.setBypassServiceWorker', { bypass: false })],
     [

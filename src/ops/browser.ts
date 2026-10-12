@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { ROOT_SESSION } from '../cdp/connection.js';
 import type { BrowserInstance } from '../browser/instance.js';
 import { mediaArgs, type MediaOptions } from '../browser/launcher.js';
@@ -5,6 +8,7 @@ import type { ManagedTarget } from '../browser/target-manager.js';
 import { evaluate } from './element.js';
 import type { ControlMode } from '../config.js';
 import { AgentBrowserError } from '../util/errors.js';
+import { paths } from '../util/paths.js';
 import type { OpsContext } from './context.js';
 
 /**
@@ -131,18 +135,58 @@ interface MediaArgs {
   screen_source?: string;
   fake_devices?: boolean;
   video_file?: string;
+  image_file?: string;
   audio_file?: string;
   origin?: string;
 }
 
+/**
+ * A still JPEG as a camera stream.
+ *
+ * Chromium's fake camera plays .y4m and .mjpeg files, and picks the parser by
+ * extension alone. A JPEG is already a valid one-frame MJPEG stream, so the
+ * only thing standing between "a photo of a QR code" and "the camera shows a
+ * QR code" is the file name. The bytes are copied under a content hash, so the
+ * same image is converted once and a changed image never reuses a stale copy.
+ */
+export function stillAsCameraFile(imageFile: string): string {
+  if (!isAbsolute(imageFile)) {
+    throw new AgentBrowserError('bad_media', `media.image_file must be an absolute path; got "${imageFile}".`);
+  }
+  if (!/\.jpe?g$/i.test(imageFile)) {
+    throw new AgentBrowserError(
+      'bad_media',
+      `media.image_file must be a .jpg or .jpeg file; got "${imageFile}". Convert PNG or WebP to JPEG first: the camera stream is MJPEG.`,
+    );
+  }
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(imageFile);
+  } catch {
+    throw new AgentBrowserError('bad_media', `media.image_file does not exist or is not readable: ${imageFile}`);
+  }
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
+    throw new AgentBrowserError('bad_media', `media.image_file is not JPEG data (wrong signature): ${imageFile}`);
+  }
+  const dir = paths.cameraStills();
+  mkdirSync(dir, { recursive: true });
+  const out = join(dir, `${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}.mjpeg`);
+  writeFileSync(out, bytes);
+  return out;
+}
+
 function toMediaOptions(media: MediaArgs): MediaOptions {
+  if (media.image_file !== undefined && media.video_file !== undefined) {
+    throw new AgentBrowserError('bad_media', 'Give media.image_file or media.video_file, not both: there is one camera.');
+  }
+  const videoFile = media.image_file !== undefined ? stillAsCameraFile(media.image_file) : media.video_file;
   return {
     ...(media.camera !== undefined ? { camera: media.camera } : {}),
     ...(media.microphone !== undefined ? { microphone: media.microphone } : {}),
     ...(media.screen !== undefined ? { screen: media.screen } : {}),
     ...(media.screen_source !== undefined ? { screenSource: media.screen_source } : {}),
     ...(media.fake_devices !== undefined ? { fakeDevices: media.fake_devices } : {}),
-    ...(media.video_file !== undefined ? { videoFile: media.video_file } : {}),
+    ...(videoFile !== undefined ? { videoFile } : {}),
     ...(media.audio_file !== undefined ? { audioFile: media.audio_file } : {}),
     ...(media.origin !== undefined ? { origin: media.origin } : {}),
   };

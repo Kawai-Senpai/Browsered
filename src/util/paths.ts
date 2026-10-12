@@ -20,6 +20,8 @@ export const paths = {
   netlogs: () => join(homeDir(), 'netlogs'),
   traces: () => join(homeDir(), 'traces'),
   screenshots: () => join(homeDir(), 'screenshots'),
+  /** Still images converted to camera streams for browser.launch{media:{image_file}}. */
+  cameraStills: () => join(homeDir(), 'camera-stills'),
   runtime: () => join(homeDir(), 'run'),
   daemonInfo: () => join(homeDir(), 'run', 'browserd.json'),
   config: () => join(homeDir(), 'config.json'),

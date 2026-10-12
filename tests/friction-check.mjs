@@ -43,7 +43,7 @@ async function call(name, args = {}) {
     err.payload = payload;
     throw err;
   }
-  if (image) payload.__image = { mimeType: image.mimeType, bytes: image.data.length };
+  if (image) payload.__image = { mimeType: image.mimeType, bytes: image.data.length, data: image.data };
   return payload;
 }
 
@@ -340,6 +340,43 @@ async function main() {
     });
     must(r.__image, 'no image returned');
     return `${r.__image.bytes} b64 chars`;
+  });
+
+  // Regression: a clip is in document coordinates. Capturing from {0,0} on a
+  // scrolled page drew position:fixed overlays shifted down by the scroll.
+  const SAMPLE_PIXELS = (data, points) => `new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+      resolve({ w: img.width, h: img.height, px: ${JSON.stringify(points)}.map(([fx, fy]) => Array.from(g.getImageData(Math.floor(fx * (img.width - 1)), Math.floor(fy * (img.height - 1)), 1, 1).data.slice(0, 3))) });
+    };
+    img.onerror = () => reject(new Error('capture did not decode'));
+    img.src = 'data:image/png;base64,${data}';
+  })`;
+  const isRed = ([r, g, b]) => r > 200 && g < 60 && b < 60;
+  await check('screenshots of a scrolled page keep fixed overlays where they are on screen', async () => {
+    await call('js.evaluate', {
+      expression: `(() => {
+        const tall = document.createElement('div'); tall.id = '__tall'; tall.style.height = '4000px'; document.body.appendChild(tall);
+        const bar = document.createElement('div'); bar.id = '__bar';
+        bar.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:30vh;background:#f00;z-index:2147483647';
+        document.body.appendChild(bar);
+        scrollTo(0, 900);
+        return scrollY;
+      })()`,
+    });
+    const shot = await call('page.screenshot', { mode: 'viewport', max_width: 400, format: 'png', settle: false });
+    const view = await call('js.evaluate', { expression: SAMPLE_PIXELS(shot.__image.data, [[0.5, 0.05], [0.5, 0.7]]), await_promise: true });
+    const [top, low] = view.value.px;
+    must(isRed(top), `top of the capture is ${JSON.stringify(top)}, not the fixed bar`);
+    must(!isRed(low), `the bar also shows lower down (${JSON.stringify(low)})`);
+    const el = await call('page.screenshot', { mode: 'element', selector: '#__bar', format: 'png', settle: false });
+    const elView = await call('js.evaluate', { expression: SAMPLE_PIXELS(el.__image.data, [[0.5, 0.5], [0.05, 0.9]]), await_promise: true });
+    must(elView.value.px.every(isRed), `element capture shows ${JSON.stringify(elView.value.px)}`);
+    await call('js.evaluate', { expression: "document.getElementById('__tall').remove(); document.getElementById('__bar').remove(); scrollTo(0, 0); 0" });
+    return `viewport ${view.value.w}x${view.value.h}, element ${elView.value.w}x${elView.value.h}`;
   });
 
   /* -------------------------------------------------------- audit_layout --- */

@@ -16,7 +16,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -98,6 +98,16 @@ const badExtension = join(files, 'camera.mp4');
 writeY4m(videoFile);
 writeWav(audioFile);
 writeFileSync(badExtension, 'not a video');
+
+/** A 64x48 solid-colour JPEG: a still image to show through the camera. */
+const STILL_JPEG =
+  '/9j/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCAAwAEADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEBAQEAAAAAAAAAAAAAAAAAAAUG/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AlALTcAAAAAAAAAAAAAAAAAAAAAAP/9k=';
+const imageFile = join(files, 'qr-photo.jpg');
+const notJpeg = join(files, 'fake.jpg');
+const pngFile = join(files, 'photo.png');
+writeFileSync(imageFile, Buffer.from(STILL_JPEG, 'base64'));
+writeFileSync(notJpeg, 'this is not image data');
+writeFileSync(pngFile, 'png');
 
 async function startFixture() {
   const server = createServer((req, res) => {
@@ -235,6 +245,40 @@ async function pure() {
     return 'videoCapture, audioCapture';
   });
 
+  area('A: still image as a camera');
+
+  await check('a JPEG is copied to a .mjpeg under the daemon home, byte for byte', async () => {
+    // paths resolve from the environment; keep this away from the real ~/.agent-browser.
+    const previous = process.env.AGENTBROWSER_HOME;
+    process.env.AGENTBROWSER_HOME = home;
+    try {
+      const { stillAsCameraFile } = await dist('ops/browser.js');
+      const out = stillAsCameraFile(imageFile);
+      must(out.endsWith('.mjpeg') && out.startsWith(home), out);
+      must(readFileSync(out).equals(readFileSync(imageFile)), 'the copy differs from the source');
+      must(stillAsCameraFile(imageFile) === out, 'the same image converted to a different path');
+      const cases = [
+        ['relative path', 'qr-photo.jpg', /absolute path/],
+        ['PNG', pngFile, /\.jpg or \.jpeg/],
+        ['missing file', join(files, 'nope.jpg'), /does not exist/],
+        ['wrong signature', notJpeg, /not JPEG data/],
+      ];
+      for (const [label, path, pattern] of cases) {
+        let err = null;
+        try {
+          stillAsCameraFile(path);
+        } catch (e) {
+          err = e;
+        }
+        must(err?.code === 'bad_media' && pattern.test(err.message), `${label}: ${err?.message ?? 'not refused'}`);
+      }
+      return `${cases.length} refused, 1 converted`;
+    } finally {
+      if (previous === undefined) delete process.env.AGENTBROWSER_HOME;
+      else process.env.AGENTBROWSER_HOME = previous;
+    }
+  });
+
   area('A: permission names and config');
 
   await check('web permission names map to CDP types; CDP names pass through', async () => {
@@ -338,6 +382,52 @@ async function live(fixture) {
       const video = g.value.find((t) => t.kind === 'video');
       must(video?.width === 64, `camera is ${video?.width}px wide, not the 64px file`);
       return `camera width ${video.width} from ${videoFile.split(/[\\/]/).pop()}`;
+    });
+
+    await mcp.call('browser.close').catch(() => {});
+    mcp.use(null);
+
+    await check('image_file shows a still image through the camera', async () => {
+      const r = await mcp.call('browser.launch', {
+        headless: !HEADED,
+        profile: 'media-check-still',
+        media: { camera: true, microphone: true, image_file: imageFile },
+      });
+      mcp.use(r.browser_id);
+      const sw = r.media.switches.find((s) => s.startsWith('--use-file-for-fake-video-capture='));
+      must(sw?.endsWith('.mjpeg'), JSON.stringify(r.media.switches));
+      await mcp.call('page.navigate', { url: fixture.url });
+      const g = await mcp.call('js.evaluate', { expression: GET_USER_MEDIA, await_promise: true, timeout_ms: 15_000 });
+      must(Array.isArray(g.value), `getUserMedia failed: ${JSON.stringify(g.value)}`);
+      const video = g.value.find((t) => t.kind === 'video');
+      must(video?.width === 64, `camera is ${video?.width}px wide, not the 64px image`);
+      // The frame really is the image, not Chromium's fallback test pattern.
+      const pixel = await mcp.call('js.evaluate', {
+        await_promise: true,
+        timeout_ms: 15_000,
+        expression: `navigator.mediaDevices.getUserMedia({ video: true }).then(async (s) => {
+          const v = document.createElement('video'); v.muted = true; v.srcObject = s; await v.play();
+          await new Promise((r) => setTimeout(r, 300));
+          const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
+          c.getContext('2d').drawImage(v, 0, 0);
+          const d = [...c.getContext('2d').getImageData(32, 24, 1, 1).data];
+          s.getTracks().forEach((t) => t.stop());
+          return d;
+        })`,
+      });
+      const [red, green, blue] = pixel.value;
+      must(Math.abs(red - 200) < 25 && Math.abs(green - 40) < 25 && Math.abs(blue - 160) < 25, `centre pixel is rgb(${red},${green},${blue}), expected about rgb(200,40,160)`);
+      return `rgb(${red},${green},${blue})`;
+    });
+
+    await check('image_file together with video_file is refused', async () => {
+      let payload = null;
+      try {
+        await mcp.call('browser.launch', { headless: true, profile: 'media-check-both', media: { image_file: imageFile, video_file: videoFile } });
+      } catch (err) {
+        payload = err.payload;
+      }
+      must(payload?.code === 'bad_media' && /not both/.test(payload.message), JSON.stringify(payload));
     });
 
     await mcp.call('browser.close').catch(() => {});
