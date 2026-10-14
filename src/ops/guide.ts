@@ -204,14 +204,16 @@ interface ToolNote {
 
 const TOOL_NOTES: Record<string, ToolNote> = {
   'browser.launch': {
-    when: 'You need something fixed at process start: headless or not, a profile, extensions, NetLog, or camera/microphone/screen capture through media. Otherwise let the first tool call auto-launch.',
+    when: 'You need something fixed at process start: headless or not, a profile, extensions, NetLog, stealth mode, or camera/microphone/screen capture through media. Otherwise let the first tool call auto-launch.',
     how: 'Spawns Chromium against a persistent profile with the requested switches, attaches the recorders before the first page runs, then reports what actually committed rather than echoing the request.',
     caveats: [
       'media is the only way past the getUserMedia permission bubble and the getDisplayMedia source picker: both are browser UI, outside the page, and no click reaches them. It cannot be switched on later; close and relaunch.',
       'getUserMedia and getDisplayMedia exist only in a secure context (https, or http://localhost / 127.0.0.1). With real devices the OS must also allow camera and microphone for desktop apps; fake_devices:true sidesteps both hardware and OS permission.',
       'A launch that passes media replaces the configured default (config.json media, AGENTBROWSER_MEDIA) whole; media:{} launches with none.',
+      'stealth:true hides automation signals (navigator.webdriver, the Chrome for Testing banner, empty plugins list) so bot detectors like Cloudflare Turnstile treat the browser as a normal user session. Fixed at process start; close and relaunch to change it. Can also be set globally via config.json stealth:true or AGENTBROWSER_STEALTH=1.',
     ],
     examples: [
+      'browser.launch { "stealth": true }',
       'browser.launch { "media": { "camera": true, "microphone": true, "fake_devices": true, "screen": true } }',
       'browser.launch { "media": { "camera": true, "video_file": "C:/fixtures/face.y4m", "audio_file": "C:/fixtures/voice.wav" } }',
     ],

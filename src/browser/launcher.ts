@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { AgentBrowserError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { bundledExtensions, paths, resolveChromium, type ResolvedBrowser } from '../util/paths.js';
+import { STEALTH_ARGS } from './stealth.js';
 
 const log = createLogger('browser:launch');
 
@@ -203,6 +204,8 @@ export interface LaunchOptions {
   /** Chromium capture mode: Default | IncludeSensitive | Everything. */
   netLogCaptureMode?: string;
   chromiumPath?: string;
+  /** Hide automation signals from bot detectors. */
+  stealth?: boolean;
   /** Wipe the profile directory before launching. */
   freshProfile?: boolean;
   launchTimeoutMs?: number;
@@ -297,6 +300,7 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
   if (existsSync(activePortFile)) rmSync(activePortFile, { force: true });
 
   const args = [...BASE_ARGS, ...linuxContainerArgs()];
+  if (options.stealth) args.push(...STEALTH_ARGS);
   args.push('--remote-debugging-port=0');
   args.push(`--user-data-dir=${userDataDir}`);
 

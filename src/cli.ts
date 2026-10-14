@@ -36,6 +36,7 @@ interface CliOptions {
   noRedact?: boolean;
   noBodies?: boolean;
   detach?: boolean;
+  stealth?: boolean;
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -121,6 +122,9 @@ function parseArgs(argv: string[]): CliOptions {
       case '--background':
         options.detach = true;
         break;
+      case '--stealth':
+        options.stealth = true;
+        break;
       default:
         if (arg.startsWith('-')) throw new Error(`Unknown flag: ${arg}. Try --help.`);
     }
@@ -154,6 +158,7 @@ Options:
   --host HOST        HTTP bind address (default 127.0.0.1; do not expose publicly).
   --profile NAME     Profile used by auto-launched browsers.
   --headless         Auto-launch headless. Default is a visible window you can also use.
+  --stealth          Hide automation signals from bot detectors (Cloudflare, etc.).
   --no-auto-launch   Never spawn a browser implicitly; require browser.launch.
   --log-level LEVEL  trace | debug | info | warn | error.
 
@@ -177,6 +182,7 @@ function buildConfig(options: CliOptions): DaemonConfig {
   if (options.host) overrides.host = options.host;
   if (options.profile) overrides.autoLaunchProfile = options.profile;
   if (options.headless) overrides.autoLaunchHeadless = true;
+  if (options.stealth) overrides.stealth = true;
   if (options.noAutoLaunch) overrides.autoLaunch = false;
   if (options.logLevel) overrides.logLevel = options.logLevel as DaemonConfig['logLevel'];
   return loadConfig(overrides);
@@ -299,6 +305,7 @@ async function runOpen(ctx: OpsContext, options: CliOptions): Promise<void> {
   const instance = await registry.launch({
     profile: options.profile ?? ctx.config.autoLaunchProfile,
     headless: options.headless ?? false,
+    stealth: options.stealth ?? ctx.config.stealth,
     ...(options.noExtensions ? { bundledExtensions: false } : {}),
   });
 

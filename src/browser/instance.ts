@@ -21,6 +21,7 @@ import {
   type LaunchOptions,
   type MediaOptions,
 } from './launcher.js';
+import { injectStealth, patchUserAgent } from './stealth.js';
 import { TargetManager, type ManagedTarget } from './target-manager.js';
 
 export type BrowserStatus = 'starting' | 'ready' | 'closing' | 'closed';
@@ -49,6 +50,8 @@ export interface BrowserInstanceInit {
   netLogPath: string | null;
   /** Media capture this browser was launched with. null when none, or when attached. */
   media: MediaOptions | null;
+  /** Stealth mode: hide automation signals from bot detectors. */
+  stealth: boolean;
   stores: Stores;
   config: DaemonConfig;
 }
@@ -71,6 +74,8 @@ export class BrowserInstance {
   readonly netLogPath: string | null;
   /** Launch-time media capture switches, fixed for the life of the process. */
   readonly media: MediaOptions | null;
+  /** True when stealth patches are active on this browser. */
+  readonly stealth: boolean;
   /** CDP permissions actually granted for media at launch. */
   mediaPermissionsGranted: string[] = [];
   readonly launchedAt = Date.now();
@@ -149,6 +154,7 @@ export class BrowserInstance {
     this.extensions = init.extensions;
     this.netLogPath = init.netLogPath;
     this.media = init.media;
+    this.stealth = init.stealth;
     this.stores = init.stores;
     this.config = init.config;
     this.process = init.process;
@@ -206,6 +212,7 @@ export class BrowserInstance {
       extensions: launched.extensionsLoaded,
       netLogPath: launched.netLogPath,
       media: media ?? null,
+      stealth: options.stealth ?? config.stealth,
       stores,
       config,
     });
@@ -247,6 +254,7 @@ export class BrowserInstance {
       extensions: [],
       netLogPath: null,
       media: null,
+      stealth: config.stealth,
       stores,
       config,
     });
@@ -323,6 +331,10 @@ export class BrowserInstance {
       await this.network.attach(target);
       await this.console.attach(target);
       await this.pages.attach(target);
+      if (this.stealth && (target.type === 'page' || target.type === 'iframe')) {
+        await injectStealth(target.session);
+        await patchUserAgent(target.session);
+      }
     });
     this.targets.onDetached((target) => {
       this.network.detach(target);

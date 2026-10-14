@@ -193,6 +193,7 @@ export class BrowserRegistry {
     this.autoLaunchInFlight = this.launch({
       profile: this.config.autoLaunchProfile,
       headless: this.config.autoLaunchHeadless,
+      stealth: this.config.stealth,
     }).finally(() => {
       this.autoLaunchInFlight = null;
     });

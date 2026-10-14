@@ -52,6 +52,12 @@ export interface DaemonConfig {
    * unless a launch passes its own `media`. null (the default) adds nothing.
    */
   media: MediaOptions | null;
+  /**
+   * Hide automation signals so bot detectors (Cloudflare Turnstile, Akamai,
+   * PerimeterX) treat the browser as a normal user session. Off by default;
+   * enabled per-launch or globally via config/env.
+   */
+  stealth: boolean;
 }
 
 export const DEFAULT_CONFIG: DaemonConfig = {
@@ -76,6 +82,7 @@ export const DEFAULT_CONFIG: DaemonConfig = {
   autoLaunchProfile: 'default',
   autoLaunchHeadless: false,
   media: null,
+  stealth: true,
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -139,6 +146,9 @@ export function loadConfig(overrides?: Partial<DaemonConfig>): DaemonConfig {
   }
   if (process.env.AGENTBROWSER_MEDIA) {
     config = { ...config, media: parseMediaEnv(process.env.AGENTBROWSER_MEDIA) };
+  }
+  if (process.env.AGENTBROWSER_STEALTH) {
+    config = { ...config, stealth: process.env.AGENTBROWSER_STEALTH !== '0' };
   }
   if (overrides) config = mergeConfig(config, overrides);
   return config;

@@ -147,6 +147,12 @@ export const TOOLS: ToolDef[] = [
       chromium_path: z.string().optional(),
       capture_netlog: z.boolean().optional().describe('Also record Chromium NetLog (DNS, sockets, TLS).'),
       window_size: z.object({ width: z.number(), height: z.number() }).optional(),
+      stealth: z
+        .boolean()
+        .optional()
+        .describe(
+          'Hide automation signals (navigator.webdriver, Chrome for Testing banner, empty plugins) so bot detectors like Cloudflare Turnstile treat the browser as a normal user session.',
+        ),
       extra_args: z.array(z.string()).optional(),
       media: z
         .object({

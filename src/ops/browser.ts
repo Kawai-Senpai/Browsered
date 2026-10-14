@@ -229,6 +229,7 @@ export async function launch(
     window_size?: { width: number; height: number };
     extra_args?: string[];
     media?: MediaArgs;
+    stealth?: boolean;
   },
 ): Promise<Record<string, unknown>> {
   const instance = await ctx.registry.launch({
@@ -240,6 +241,7 @@ export async function launch(
     ...(args.window_size ? { windowSize: args.window_size } : {}),
     ...(args.extra_args ? { args: args.extra_args } : {}),
     ...(args.media ? { media: toMediaOptions(args.media) } : {}),
+    ...(args.stealth !== undefined ? { stealth: args.stealth } : {}),
     ...(args.url ? { urls: [args.url] } : {}),
   });
   const media = mediaReport(instance);
@@ -263,6 +265,7 @@ export async function launch(
     user_data_dir: instance.userDataDir,
     extensions_loaded: instance.extensions,
     netlog_path: instance.netLogPath,
+    stealth: instance.stealth,
     ...(media ? { media } : {}),
     tabs: instance.targets.listPages().length,
     ...(args.url
@@ -449,6 +452,7 @@ export async function status(
     control_mode: instance.controlMode,
     managed: instance.managed,
     headless: instance.headless,
+    stealth: instance.stealth,
     pid: instance.pid,
     executable: instance.executable,
     ws_endpoint: instance.wsEndpoint,
@@ -606,6 +610,7 @@ export async function reveal(
   const launchOptions = {
     profile,
     headless: false,
+    stealth: instance.stealth,
     ...(extensions.length > 0 ? { extensions } : {}),
     // Media switches are fixed at process start too; losing them here would
     // turn a working capture flow back into a prompt the human never asked for.
