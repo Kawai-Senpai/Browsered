@@ -194,8 +194,10 @@ export class BrowserInstance {
     // A launch that names its own media replaces the configured default whole,
     // so media:{} is how one launch opts out of a default.
     const media = options.media ?? config.media ?? undefined;
+    const stealth = options.stealth ?? config.stealth;
     const launched = await launchBrowser({
       ...options,
+      stealth,
       chromiumPath: options.chromiumPath ?? config.chromiumPath,
       ...(media ? { media } : {}),
     });
@@ -212,7 +214,7 @@ export class BrowserInstance {
       extensions: launched.extensionsLoaded,
       netLogPath: launched.netLogPath,
       media: media ?? null,
-      stealth: options.stealth ?? config.stealth,
+      stealth,
       stores,
       config,
     });

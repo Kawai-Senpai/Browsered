@@ -53,9 +53,9 @@ export interface DaemonConfig {
    */
   media: MediaOptions | null;
   /**
-   * Hide automation signals so bot detectors (Cloudflare Turnstile, Akamai,
-   * PerimeterX) treat the browser as a normal user session. Off by default;
-   * enabled per-launch or globally via config/env.
+   * Apply best-effort automation fingerprint patches. Enabled by default;
+   * configurable per-launch or globally via config/env. This does not
+   * guarantee acceptance by sign-in providers or bot detectors.
    */
   stealth: boolean;
 }

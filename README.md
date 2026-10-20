@@ -175,6 +175,7 @@ That prints the resolved path, the `source` that won (`env`, `config`,
 | macOS: `"Chromium" is damaged and can't be opened` | Gatekeeper quarantine. `xattr -dr com.apple.quarantine "/path/to/Chromium.app"`, or reinstall via `npx playwright install chromium`. |
 | Extensions silently absent | A branded browser won. Run `npx playwright install chromium`, or point `AGENTBROWSER_CHROMIUM` at an unbranded Chromium. |
 | Wrong browser chosen | Detection order is fixed. Override it with `AGENTBROWSER_CHROMIUM`, which beats every other source. |
+| Google: `This browser or app may not be secure` | Fingerprint patches do not guarantee Google sign-in acceptance. Google documents restrictions on embedded and automation-based sign-ins; applications accessing Google account data should use [browser-based OAuth](https://security.googleblog.com/2019/04/better-protection-against-man-in-middle.html). Rebuild and restart browserd after code changes; launch-time flags require a new browser process. |
 
 ### 2. Build
 
