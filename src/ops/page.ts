@@ -586,15 +586,18 @@ async function pageIsHidden(instance: BrowserInstance, target: ManagedTarget): P
   }
 }
 
-/** Resolve after `count` animation frames, or after `timeoutMs` if frames never come. */
+/**
+ * Resolve after `count` animation frames, or after `timeoutMs` if frames never
+ * come. True when the frames came: the page is really painting.
+ */
 async function waitForFrames(
   instance: BrowserInstance,
   target: ManagedTarget,
   count: number,
   timeoutMs: number,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await evaluate(instance, target, {
+    const { result } = await evaluate(instance, target, {
       expression: `new Promise((done) => {
         const stop = setTimeout(done, ${timeoutMs});
         let left = ${count};
@@ -604,8 +607,10 @@ async function waitForFrames(
       returnByValue: true,
       awaitPromise: true,
     });
+    return result.value === true;
   } catch {
     /* Best effort: a capture without the wait beats no capture. */
+    return false;
   }
 }
 
@@ -749,6 +754,33 @@ export async function screenshot(
   }
 
   /*
+   * "Visible" is not "painting". In a browser the person launched themselves
+   * (connected, not launched by us, so without
+   * --disable-backgrounding-occluded-windows), a minimized or covered window
+   * reports visibilityState "visible" yet paints nothing, and the capture is
+   * the frame from before the last navigation: a skeleton for a page that
+   * has long since loaded (QA, 2026-10-24). So check that frames really flow;
+   * if not, restore a minimized window and bring the tab forward, and if it
+   * still will not paint, say so rather than hand back an old picture.
+   */
+  let restoreMinimized: number | null = null;
+  let stale = false;
+  if (!(await waitForFrames(instance, target, 2, 600))) {
+    try {
+      const win = await instance.browserSession.send<{ windowId: number; bounds: { windowState?: string } }>('Browser.getWindowForTarget', { targetId: target.cdpTargetId });
+      if (win.bounds?.windowState === 'minimized') {
+        await instance.browserSession.trySend('Browser.setWindowBounds', { windowId: win.windowId, bounds: { windowState: 'normal' } });
+        restoreMinimized = win.windowId;
+      }
+    } catch {
+      /* not every browser exposes its windows */
+    }
+    restoreTo = restoreTo ?? (await currentActiveTarget(instance));
+    await instance.browserSession.trySend('Target.activateTarget', { targetId: target.cdpTargetId });
+    stale = !(await waitForFrames(instance, target, 3, 2_000));
+  }
+
+  /*
    * Settle last, after the lazy sweep and the highlight: scrolling and overlays
    * both start animations of their own.
    */
@@ -783,6 +815,9 @@ export async function screenshot(
     throw error;
   } finally {
     if (args.highlight) await target.session.trySend('Overlay.hideHighlight');
+    if (restoreMinimized !== null) {
+      await instance.browserSession.trySend('Browser.setWindowBounds', { windowId: restoreMinimized, bounds: { windowState: 'minimized' } });
+    }
     if (restoreTo && restoreTo !== target.handle) {
       const previous = instance.targets.get(restoreTo);
       if (previous) await instance.browserSession.trySend('Target.activateTarget', { targetId: previous.cdpTargetId });
@@ -813,6 +848,13 @@ export async function screenshot(
     ...(highlighted ? { highlighted } : {}),
     ...(wasHidden
       ? { rendered_in_background: true, note: 'The tab was in the background, so it was brought to the front for this capture (the frame is current) and the previous tab was put back.' }
+      : {}),
+    ...(stale
+      ? {
+          stale_frame: true,
+          warning_stale:
+            'The page reports itself visible but its window is not painting (minimized or covered by another window), so this image may be from before the last change. Read the page with page.extract_text or js.evaluate, or bring the browser window to the front and capture again.',
+        }
       : {}),
     ...(animationsRunning > 0
       ? {
