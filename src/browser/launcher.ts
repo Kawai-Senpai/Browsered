@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AgentBrowserError } from '../util/errors.js';
@@ -224,6 +224,141 @@ export interface LaunchedBrowser {
   extensionsLoaded: string[];
 }
 
+/** Who already holds a profile. wsEndpoint is null when it has no DevTools port. */
+export interface ProfileOwner {
+  wsEndpoint: string | null;
+  pid: number | null;
+}
+
+/**
+ * A live Chromium owns this profile, so launching on it cannot work.
+ *
+ * Chromium allows one process per --user-data-dir. A second one hands its URLs
+ * to the first (the stray about:blank tab in someone's window) and quits without
+ * a DevTools port, so a launch can only ever fail here. Callers that can use the
+ * running browser attach to `owner` instead.
+ */
+export class ProfileInUseError extends AgentBrowserError {
+  readonly owner: ProfileOwner;
+
+  constructor(userDataDir: string, owner: ProfileOwner) {
+    super(
+      'profile_in_use',
+      `Another Chromium${owner.pid ? ` (pid ${owner.pid})` : ''} is already using this profile: ${userDataDir}. ` +
+        'Close that window, or launch with a different profile.',
+      { userDataDir, pid: owner.pid, wsEndpoint: owner.wsEndpoint },
+    );
+    this.name = 'ProfileInUseError';
+    this.owner = owner;
+  }
+}
+
+/** The browser WebSocket behind a DevTools port, or null if nothing answers there. */
+async function devToolsEndpoint(port: number): Promise<string | null> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1_500) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { webSocketDebuggerUrl?: string };
+    return body.webSocketDebuggerUrl ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when a live process holds the profile, without asking Chromium to start. */
+function profileLocked(userDataDir: string): boolean {
+  if (process.platform === 'win32') {
+    // Chromium keeps `lockfile` open with no sharing while it runs. A leftover
+    // file from a crash opens fine, so this cannot be fooled by a dead browser.
+    const file = join(userDataDir, 'lockfile');
+    if (!existsSync(file)) return false;
+    try {
+      closeSync(openSync(file, 'r+'));
+      return false;
+    } catch (err) {
+      return ['EBUSY', 'EPERM', 'EACCES'].includes((err as NodeJS.ErrnoException).code ?? '');
+    }
+  }
+  // Elsewhere SingletonLock is a symlink to "hostname-pid".
+  const lock = join(userDataDir, 'SingletonLock');
+  try {
+    lstatSync(lock);
+    process.kill(Number(readlinkSync(lock).split('-').pop()), 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function run(file: string, args: string[], env?: Record<string, string>): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(file, args, { env: { ...process.env, ...env }, windowsHide: true, timeout: 10_000 }, (_err, stdout) => {
+      resolve(typeof stdout === 'string' ? stdout : '');
+    });
+  });
+}
+
+/** Browser processes started on this profile: never its renderers or helpers. */
+async function profileProcesses(userDataDir: string): Promise<number[]> {
+  if (process.platform === 'win32') {
+    // The path travels in an environment variable so nothing in it needs quoting.
+    const script =
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and " +
+      "$_.CommandLine.Contains('--user-data-dir=' + $env:BROWSERD_PROFILE) -and " +
+      "-not $_.CommandLine.Contains('--type=') } | ForEach-Object { $_.ProcessId }";
+    const out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      BROWSERD_PROFILE: userDataDir,
+    });
+    return out.split(/\s+/).map(Number).filter((pid) => pid > 0);
+  }
+  const out = await run('ps', ['-axo', 'pid=,command=']);
+  return out
+    .split('\n')
+    .filter((line) => line.includes(`--user-data-dir=${userDataDir}`) && !line.includes('--type='))
+    .map((line) => Number.parseInt(line, 10))
+    .filter((pid) => pid > 0);
+}
+
+async function listeningPorts(pid: number): Promise<number[]> {
+  if (process.platform === 'win32') {
+    const out = await run('netstat', ['-ano', '-p', 'tcp']);
+    return out
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/))
+      .filter((cols) => cols[3] === 'LISTENING' && Number(cols[4]) === pid)
+      .map((cols) => Number(cols[1]?.split(':').pop()))
+      .filter((port) => port > 0);
+  }
+  const out = await run('lsof', ['-nP', '-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN']);
+  return [...out.matchAll(/:(\d+) \(LISTEN\)/g)].map((m) => Number(m[1]));
+}
+
+/**
+ * The running browser that holds a profile, if there is one.
+ *
+ * DevToolsActivePort answers the common case with one request. Everything after
+ * it runs only once the profile is known to be locked, so a normal launch pays
+ * for one file read and never for a process scan.
+ */
+export async function findProfileOwner(userDataDir: string): Promise<ProfileOwner | null> {
+  const file = join(userDataDir, 'DevToolsActivePort');
+  if (existsSync(file)) {
+    const port = Number(readFileSync(file, 'utf8').split('\n')[0]?.trim());
+    const wsEndpoint = port > 0 ? await devToolsEndpoint(port) : null;
+    if (wsEndpoint) return { wsEndpoint, pid: null };
+  }
+  if (!profileLocked(userDataDir)) return null;
+
+  const pids = await profileProcesses(userDataDir);
+  for (const pid of pids) {
+    for (const port of await listeningPorts(pid)) {
+      const wsEndpoint = await devToolsEndpoint(port);
+      if (wsEndpoint) return { wsEndpoint, pid };
+    }
+  }
+  return { wsEndpoint: null, pid: pids[0] ?? null };
+}
+
 /**
  * Chromium writes the negotiated port and browser WebSocket path here once the
  * DevTools endpoint is listening. Polling this file is more reliable than
@@ -248,15 +383,14 @@ async function readDevToolsActivePort(
       /*
        * Exit 21 is Chromium's ProcessSingleton bailing out: another process
        * already holds this --user-data-dir, so it hands its URLs to that
-       * instance and quits without ever opening a DevTools port. The bare exit
-       * code sends people hunting for sandbox or missing-binary problems, so
-       * the profile conflict is named explicitly. The timeout path below gives
-       * the same advice, but a locked profile exits far too fast to reach it.
+       * instance and quits without ever opening a DevTools port. On Windows the
+       * same hand-off exits 0. launchBrowser checks for an owner first, so this
+       * only catches a browser that started between that check and the spawn.
        */
-      if (exitCode === 21) {
-        throw new Error(
-          `Chromium exited immediately: another browser is already using this profile ` +
-            `(${userDataDir}). Close it, or launch with a different profile. [${exitInfo}]`,
+      if (exitCode === 21 || exitCode === 0) {
+        throw new ProfileInUseError(
+          userDataDir,
+          (await findProfileOwner(userDataDir)) ?? { wsEndpoint: null, pid: null },
         );
       }
       throw new Error(`Chromium exited before the DevTools endpoint appeared (${exitInfo})`);
@@ -288,6 +422,11 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
   const userDataDir = paths.profile(options.profile);
   // Validated before anything touches the profile, so a bad path costs nothing.
   const media = mediaArgs(options.media);
+
+  // Before anything below: a spawn here would only drop a blank tab in the
+  // running window, and removing DevToolsActivePort would hide its port for good.
+  const owner = existsSync(userDataDir) ? await findProfileOwner(userDataDir) : null;
+  if (owner) throw new ProfileInUseError(userDataDir, owner);
 
   if (options.freshProfile && existsSync(userDataDir)) {
     rmSync(userDataDir, { recursive: true, force: true });

@@ -375,11 +375,15 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'page.screenshot',
     description:
-      'See the rendered page. Returns the image for visual inspection plus a stored artifact. mode: viewport, full_page, or element (with a locator).',
+      'See the rendered page. Returns the image for visual inspection plus a stored artifact. mode: viewport, full_page, element (with a locator), or sheet: the whole page cut into side-by-side columns that fit one screen, so a long page stays readable. Prefer sheet for reviewing a whole page; add width:320 for a phone or width:1280 for a desktop without touching the viewport.',
     schema: {
       ...scope,
       ...locator,
-      mode: z.enum(['viewport', 'full_page', 'element']).optional(),
+      mode: z.enum(['viewport', 'full_page', 'element', 'sheet']).optional(),
+      columns: z.number().optional().describe('mode:sheet. Columns to cut the page into, up to 12. Default: whatever fits aspect.'),
+      aspect: z.union([z.string(), z.number()]).optional().describe('mode:sheet. Shape to fit, like "16:10" or "4:3". Default 16:10.'),
+      width: z.number().optional().describe('mode:sheet. Lay the page out at this CSS width for the capture, then put the viewport back. Under 600 emulates a phone.'),
+      height: z.number().optional().describe('mode:sheet. Viewport height to go with width. Default 800 for a phone, 900 otherwise.'),
       format: z.enum(['png', 'jpeg', 'webp']).optional(),
       quality: z.number().optional().describe('1-100, for jpeg/webp.'),
       save_path: z.string().optional(),
@@ -408,7 +412,7 @@ export const TOOLS: ToolDef[] = [
       max_width: z
         .number()
         .optional()
-        .describe('Downscale the capture to at most this many CSS pixels wide. Cuts payload on wide or full-page shots.'),
+        .describe('Downscale the capture to at most this many CSS pixels wide. Cuts payload on wide or full-page shots. With mode:sheet it caps the whole sheet, default 2000.'),
     },
     handler: op(pageOps.screenshot),
     readOnly: true,

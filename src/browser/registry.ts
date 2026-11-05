@@ -2,11 +2,14 @@ import type { DaemonConfig } from '../config.js';
 import type { Stores } from '../store/index.js';
 import { NotFoundError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
-import { discover, publish, withdraw, type BrowserRecord } from './discovery.js';
+import { discover, isAlive, publish, withdraw, type BrowserRecord } from './discovery.js';
 import { BrowserInstance } from './instance.js';
-import type { LaunchOptions } from './launcher.js';
+import { ProfileInUseError, type LaunchOptions } from './launcher.js';
 
 const log = createLogger('registry');
+
+/** How many profiles auto-launch tries before giving up. */
+const AUTO_LAUNCH_PROFILES = 4;
 
 /**
  * Every browser the daemon owns or has attached to. One process, many
@@ -29,10 +32,31 @@ export class BrowserRegistry {
     private readonly config: DaemonConfig,
   ) {}
 
+  /**
+   * Launch, or attach when the profile's browser is already running.
+   *
+   * A profile can only have one Chromium, so "open this profile" is met by the
+   * window that has it. Options fixed at process start cannot apply to a browser
+   * already running, so a launch asking for any of those gets the error instead
+   * of silently losing them.
+   */
   async launch(options: LaunchOptions): Promise<BrowserInstance> {
-    const instance = await BrowserInstance.launch(options, this.stores, this.config);
-    this.register(instance);
-    return instance;
+    try {
+      const instance = await BrowserInstance.launch(options, this.stores, this.config);
+      this.register(instance);
+      return instance;
+    } catch (err) {
+      if (!(err instanceof ProfileInUseError) || !err.owner.wsEndpoint) throw err;
+      const fixedAtStart =
+        options.media || options.extensions?.length || options.args?.length || options.netLog || options.freshProfile;
+      if (fixedAtStart) throw err;
+      log.info(`profile ${options.profile} is already running; attaching to it`);
+      return this.connect({
+        wsEndpoint: err.owner.wsEndpoint,
+        profile: options.profile,
+        ...(err.owner.pid ? { pid: err.owner.pid } : {}),
+      });
+    }
   }
 
   async connect(input: {
@@ -118,8 +142,18 @@ export class BrowserRegistry {
       });
     }
 
-    instance.onClosed(() => {
+    instance.onClosed((reason) => {
       this.browsers.delete(instance.id);
+      /*
+       * A dropped socket is not a closed browser. 1006s after a sleep or a
+       * long idle left a live window with no record, and the next launch died
+       * on its profile lock. The record stays, so the next tool call adopts the
+       * same window under the same id; discover() reaps it once the pid is gone.
+       */
+      if (reason.startsWith('websocket closed') && isAlive(instance.pid)) {
+        log.info(`${instance.id} lost its socket but chromium is alive; keeping its record`);
+        return;
+      }
       /*
        * Withdraw regardless of who advertised it. A browser closed through an
        * adopting process is just as gone as one closed by its owner, and
@@ -190,14 +224,31 @@ export class BrowserRegistry {
 
     if (this.autoLaunchInFlight) return this.autoLaunchInFlight;
     log.info('no browser running; auto-launching one');
-    this.autoLaunchInFlight = this.launch({
-      profile: this.config.autoLaunchProfile,
-      headless: this.config.autoLaunchHeadless,
-      stealth: this.config.stealth,
-    }).finally(() => {
+    this.autoLaunchInFlight = this.autoLaunch().finally(() => {
       this.autoLaunchInFlight = null;
     });
     return this.autoLaunchInFlight;
+  }
+
+  /**
+   * An agent asked for "a browser", not that profile, so a profile held by
+   * something unreachable moves on to the next one rather than failing the call.
+   */
+  private async autoLaunch(): Promise<BrowserInstance> {
+    const base = this.config.autoLaunchProfile;
+    for (let attempt = 1; ; attempt += 1) {
+      const profile = attempt === 1 ? base : `${base}-${attempt}`;
+      try {
+        return await this.launch({
+          profile,
+          headless: this.config.autoLaunchHeadless,
+          stealth: this.config.stealth,
+        });
+      } catch (err) {
+        if (!(err instanceof ProfileInUseError) || attempt >= AUTO_LAUNCH_PROFILES) throw err;
+        log.warn(`profile ${profile} is held by something we cannot attach to; trying the next`);
+      }
+    }
   }
 
   async closeAll(): Promise<void> {

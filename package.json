@@ -30,7 +30,7 @@
     "install-mcp": "node scripts/install-mcp.mjs",
     "open": "node dist/cli.js open",
     "start": "node dist/cli.js",
-    "test": "npm run build && node tests/launch-config-check.mjs && node tests/mcp-live.mjs && node tests/friction-check.mjs && node tests/http-smoke.mjs && node tests/session-workflow-check.mjs && node tests/skeleton-check.mjs && node tests/guide-check.mjs && node tests/qa-check.mjs && node tests/hidden-error-check.mjs && node tests/document-check.mjs && node tests/media-check.mjs && node tests/sensor-check.mjs && node tests/batch-check.mjs",
+    "test": "npm run build && node tests/launch-config-check.mjs && node tests/profile-lock-check.mjs && node tests/sheet-check.mjs && node tests/mcp-live.mjs && node tests/friction-check.mjs && node tests/http-smoke.mjs && node tests/session-workflow-check.mjs && node tests/skeleton-check.mjs && node tests/guide-check.mjs && node tests/qa-check.mjs && node tests/hidden-error-check.mjs && node tests/document-check.mjs && node tests/media-check.mjs && node tests/sensor-check.mjs && node tests/batch-check.mjs",
     "test:all": "npm run build && node tests/mcp-live.mjs && node tests/friction-check.mjs && node tests/http-smoke.mjs && node tests/session-workflow-check.mjs && node tests/skeleton-check.mjs && node tests/guide-check.mjs && node tests/qa-check.mjs && node tests/hidden-error-check.mjs && node tests/document-check.mjs && node tests/media-check.mjs && node tests/sensor-check.mjs && node tests/batch-check.mjs && node tests/playwright-interop.mjs && node tests/extension-check.mjs && node tests/discovery-check.mjs && node tests/deep-dive.mjs --headless",
     "test:document": "node tests/document-check.mjs",
     "test:friction": "node tests/friction-check.mjs",

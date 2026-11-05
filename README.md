@@ -44,7 +44,7 @@ response body, the console error, the stack trace, and the exact source line.
 
 | | |
 |---|---|
-| **See** | Screenshots (viewport / full-page / element) returned as real image blocks. Accessibility snapshots with stable `eNN` refs — cheaper and more reliable than vision for deciding what to click. |
+| **See** | Screenshots (viewport / full-page / element / sheet) returned as real image blocks. `mode:"sheet"` lays a whole page out in columns that fit one screen, at any `width`. Accessibility snapshots with stable `eNN` refs — cheaper and more reliable than vision for deciding what to click. |
 | **Act** | Click, hover, type, key chords, scroll, select, upload, handle dialogs. Falls back to touch dispatch under device emulation. |
 | **Network** | Every request with **all** headers (including what actually went on the wire), request payloads, response bodies, initiators, timings, redirect chains, WebSocket frames. Recording is armed before the first page script runs. |
 | **Console** | `console.*` output and uncaught exceptions with stacks, **kept across navigations**. Plus `Runtime.evaluate` with the DevTools command-line API (`$`, `$$`, `$x`). |

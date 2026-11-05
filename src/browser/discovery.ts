@@ -54,7 +54,7 @@ function recordPath(browserId: string): string {
 }
 
 /** True if a pid is a live process this user can signal. */
-function isAlive(pid: number | null | undefined): boolean {
+export function isAlive(pid: number | null | undefined): boolean {
   if (!pid || pid <= 0) return false;
   try {
     // Signal 0 performs the permission and existence checks without delivering

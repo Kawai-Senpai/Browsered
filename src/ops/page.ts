@@ -652,23 +652,180 @@ async function captureDiagnostics(
   return out;
 }
 
+/** Tall enough that a full_page image reads badly at the size it arrives. */
+const TALL_PAGE_RATIO = 2.5;
+
+/** The column count that brings a cut-up page closest to the wanted shape. */
+export function sheetColumns(pageWidth: number, pageHeight: number, aspect: number): number {
+  // n columns of width W and height H/n make a sheet of shape n * n * W / H.
+  return Math.min(Math.max(Math.round(Math.sqrt((aspect * pageHeight) / pageWidth)), 1), 12);
+}
+
+/** "16:10", "4/3" or a plain number, as width over height. */
+export function parseAspect(aspect: string | number | undefined): number {
+  if (aspect === undefined) return 16 / 10;
+  if (typeof aspect === 'number') {
+    if (aspect > 0) return aspect;
+  } else {
+    const [w, h] = aspect.split(/[:/x]/).map(Number);
+    if (w && h && w > 0 && h > 0) return w / h;
+    if (w && h === undefined && w > 0) return w;
+  }
+  throw new AgentBrowserError('bad_aspect', `aspect must look like "16:10" or 1.6; got "${aspect}".`);
+}
+
+/**
+ * The whole page, cut into columns laid side by side, in one image.
+ *
+ * WHY THIS EXISTS. A long page as one tall image reaches whoever reads it scaled
+ * down until the text is noise. Cut into columns it keeps its real size and still
+ * fits one screen, so a whole page can be reviewed at once.
+ *
+ * Each column is its own capture, so a very tall page never meets the size limit
+ * of a single capture, and the columns are joined on a canvas in a scratch tab for
+ * the reason page.filmstrip gives: no image library, and no touching the page.
+ */
+async function screenshotSheet(ctx: OpsContext, args: SheetArgs): Promise<Record<string, unknown>> {
+  const { instance, target } = await pageOf(ctx, args);
+  const aspect = parseAspect(args.aspect);
+  const gap = 16;
+  const sheetCap = Math.max(args.max_width ?? 2_000, 480);
+  const quality = args.quality ?? 82;
+  const timeout = Math.min(Math.max(args.timeout_ms ?? 15_000, 1_000), 120_000);
+
+  const wasHidden = await pageIsHidden(instance, target);
+  const restoreTo = wasHidden ? await currentActiveTarget(instance) : null;
+  if (wasHidden) await instance.browserSession.trySend('Target.activateTarget', { targetId: target.cdpTargetId });
+
+  const shots: string[] = [];
+  let pageWidth = 0;
+  let pageHeight = 0;
+  let columns = 0;
+  let scale = 1;
+  try {
+    if (args.width) {
+      await target.session.send('Emulation.setDeviceMetricsOverride', {
+        width: args.width,
+        height: args.height ?? (args.width < 600 ? 800 : 900),
+        deviceScaleFactor: 1,
+        mobile: args.width < 600,
+      });
+      await delay(300);
+    }
+    if (args.trigger_lazy_content !== false) await triggerLazyContent(instance, target);
+    if (args.settle !== false) await settleAnimations(instance, target, args.settle_timeout_ms ?? 2_000);
+
+    const metrics = await target.session.send<{ cssContentSize: { width: number; height: number } }>('Page.getLayoutMetrics');
+    pageWidth = Math.ceil(metrics.cssContentSize.width);
+    pageHeight = Math.ceil(metrics.cssContentSize.height);
+    columns = Math.min(Math.max(args.columns ?? sheetColumns(pageWidth, pageHeight, aspect), 1), 12);
+    scale = Math.min(1, (sheetCap - gap * (columns + 1)) / (columns * pageWidth));
+
+    const columnHeight = Math.ceil(pageHeight / columns);
+    for (let i = 0; i < columns; i += 1) {
+      const y = i * columnHeight;
+      const clip = { x: 0, y, width: pageWidth, height: Math.min(columnHeight, pageHeight - y), scale };
+      shots.push(
+        await serializeCapture(`${instance.id}:${target.handle}`, async () => {
+          const shot = await target.session.send<{ data: string }>(
+            'Page.captureScreenshot',
+            { format: 'jpeg', quality: Math.min(quality + 8, 100), captureBeyondViewport: true, clip },
+            timeout,
+          );
+          return shot.data;
+        }),
+      );
+    }
+  } finally {
+    if (args.width) await target.session.trySend('Emulation.clearDeviceMetricsOverride');
+    if (restoreTo && restoreTo !== target.handle) {
+      const previous = instance.targets.get(restoreTo);
+      if (previous) await instance.browserSession.trySend('Target.activateTarget', { targetId: previous.cdpTargetId });
+    }
+  }
+
+  const { targetId } = await instance.browserSession.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', background: true });
+  const scratch = await waitForTarget(instance, targetId, 10_000);
+  let sheet: { data: string; w: number; h: number };
+  try {
+    const composed = await evaluate(instance, scratch, {
+      expression:
+        '(async () => {' +
+        '  const srcs = ' + JSON.stringify(shots) + ';' +
+        '  const gap = ' + gap + ';' +
+        '  const imgs = await Promise.all(srcs.map((d) => new Promise((res, rej) => {' +
+        '    const im = new Image(); im.onload = () => res(im); im.onerror = rej;' +
+        '    im.src = "data:image/jpeg;base64," + d;' +
+        '  })));' +
+        '  const w = imgs[0].naturalWidth; const h = imgs[0].naturalHeight;' +
+        '  const c = document.createElement("canvas");' +
+        '  c.width = imgs.length * w + gap * (imgs.length + 1);' +
+        '  c.height = h + gap * 2;' +
+        '  const g = c.getContext("2d");' +
+        '  g.fillStyle = "#8a8a8a"; g.fillRect(0, 0, c.width, c.height);' +
+        '  imgs.forEach((im, i) => g.drawImage(im, gap + i * (w + gap), gap));' +
+        '  return { data: c.toDataURL("image/jpeg", ' + quality / 100 + ').split(",")[1], w: c.width, h: c.height };' +
+        '})()',
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    sheet = composed.result.value as { data: string; w: number; h: number };
+  } finally {
+    await instance.browserSession.send('Target.closeTarget', { targetId }).catch(() => undefined);
+  }
+
+  const buffer = Buffer.from(sheet.data, 'base64');
+  const artifact = ctx.stores.artifacts.put('screenshot', buffer, {
+    browserId: instance.id,
+    label: args.label ?? 'sheet',
+    mime: 'image/jpeg',
+    sourceRef: target.handle,
+    meta: { kind: 'sheet', columns, url: target.info.url, ...(args.width ? { width: args.width } : {}) },
+  });
+  const out: Record<string, unknown> = {
+    target_id: target.handle,
+    mode: 'sheet',
+    format: 'jpeg',
+    columns,
+    page_size: { width: pageWidth, height: pageHeight },
+    sheet_size: { width: sheet.w, height: sheet.h },
+    ...(scale === 1 ? {} : { scaled: Number(scale.toFixed(3)) }),
+    size_bytes: buffer.length,
+    artifact: toArtifactRef(artifact),
+    url: await currentUrl(instance, target),
+    title: target.info.title,
+    hint: 'Read columns left to right: each one carries on from the bottom of the last.',
+  };
+  if (args.save_path) out.saved_to = ctx.stores.artifacts.exportTo(artifact.artifact_handle, args.save_path);
+  if (args.return_image !== false) out._image = { data: sheet.data, mime: 'image/jpeg' };
+  return out;
+}
+
+interface SheetArgs extends PageArgs {
+  columns?: number;
+  aspect?: string | number;
+  width?: number;
+  height?: number;
+  max_width?: number;
+  quality?: number;
+  save_path?: string;
+  return_image?: boolean;
+  label?: string;
+  timeout_ms?: number;
+  settle?: boolean;
+  settle_timeout_ms?: number;
+  trigger_lazy_content?: boolean;
+}
+
 export async function screenshot(
   ctx: OpsContext,
-  args: PageArgs & {
-    mode?: 'viewport' | 'full_page' | 'element';
+  args: SheetArgs & {
+    mode?: 'viewport' | 'full_page' | 'element' | 'sheet';
     format?: 'png' | 'jpeg' | 'webp';
-    quality?: number;
-    save_path?: string;
-    return_image?: boolean;
     highlight?: string;
-    label?: string;
-    timeout_ms?: number;
-    settle?: boolean;
-    settle_timeout_ms?: number;
-    trigger_lazy_content?: boolean;
-    max_width?: number;
   },
 ): Promise<Record<string, unknown>> {
+  if (args.mode === 'sheet') return screenshotSheet(ctx, args);
   const { instance, target } = await pageOf(ctx, args);
   const mode = args.mode ?? 'viewport';
   const format = args.format ?? 'png';
@@ -689,11 +846,13 @@ export async function screenshot(
   // Downscaling is done by Chromium at capture time via the clip scale, so a
   // wide desktop screenshot costs a fraction of the bytes without a resize step.
   let scale = 1;
+  let tallPage = false;
   if (mode === 'full_page') {
     const metrics = await target.session.send<{
       cssContentSize: { width: number; height: number };
     }>('Page.getLayoutMetrics');
     const size = metrics.cssContentSize;
+    tallPage = size.height / size.width > TALL_PAGE_RATIO;
     if (args.max_width && size.width > args.max_width) scale = args.max_width / size.width;
     params.clip = { x: 0, y: 0, width: size.width, height: size.height, scale };
     params.captureBeyondViewport = true;
@@ -845,6 +1004,7 @@ export async function screenshot(
     title: target.info.title,
     ...(scale === 1 ? {} : { scaled: Number(scale.toFixed(3)) }),
     ...(sweep ? { scrolled_through: true } : {}),
+    ...(tallPage ? { hint: 'This page is tall, so it reads small as one image. mode:"sheet" lays it out in columns on one screen.' } : {}),
     ...(highlighted ? { highlighted } : {}),
     ...(wasHidden
       ? { rendered_in_background: true, note: 'The tab was in the background, so it was brought to the front for this capture (the frame is current) and the previous tab was put back.' }
