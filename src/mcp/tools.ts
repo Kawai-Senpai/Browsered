@@ -13,6 +13,7 @@ import * as domOps from '../ops/dom.js';
 import * as emulationOps from '../ops/emulation.js';
 import * as faultOps from '../ops/faults.js';
 import * as fileOps from '../ops/file.js';
+import * as gestureOps from '../ops/gesture.js';
 import * as guideOps from '../ops/guide.js';
 import * as inspectorOps from '../ops/inspector.js';
 import * as jsOps from '../ops/js.js';
@@ -81,6 +82,22 @@ const paging = {
   limit: z.number().optional(),
   offset: z.number().optional(),
   order: z.enum(['asc', 'desc']).optional(),
+};
+/** How the gesture tools (drag, long_press, pinch, pointer) move. */
+const gestureMotion = {
+  input: z
+    .enum(['auto', 'mouse', 'touch'])
+    .optional()
+    .describe('Default auto: touch when touch emulation is on for the tab (device.preset), else mouse.'),
+  human: z
+    .boolean()
+    .optional()
+    .describe('Default true: curved path, slow-fast-slow speed, hand jitter, short pauses. false: straight, even, no pauses.'),
+  seed: z.number().optional().describe('Seed for the human randomness, to repeat a gesture exactly. Every call reports the seed it used.'),
+  jitter_px: z.number().optional().describe('Hand wobble mid-path in CSS px. Default 1.5; 0 for a steady hand. Ends are always exact.'),
+  modifiers: z.array(z.string()).optional().describe('Keys held throughout, e.g. ["Shift"] or ["Alt"].'),
+  verify: z.boolean().optional().describe('Watch for DOM mutations after the gesture. Default true.'),
+  verify_ms: z.number().optional().describe('How long to watch. Default 300.'),
 };
 
 /**
@@ -480,6 +497,8 @@ export const TOOLS: ToolDef[] = [
         .boolean()
         .optional()
         .describe('If nothing changed, retry through the element own .click(), which reaches framework handlers synthetic input can miss.'),
+      x: z.number().optional().describe('With y and no locator: click this viewport point in CSS px (the `at.css` units every click reports). For controls no locator can reach.'),
+      y: z.number().optional().describe('With x: viewport point in CSS px.'),
     },
     handler: op(pageOps.click),
   },
@@ -488,6 +507,116 @@ export const TOOLS: ToolDef[] = [
     description: 'Move the mouse over an element, triggering hover styles and menus.',
     schema: { ...scope, ...locator },
     handler: op(pageOps.hover),
+  },
+  {
+    name: 'page.drag',
+    description:
+      'Press, travel and release like a hand: drag-and-drop, slide a slider or "slide to unlock", reorder a list, pan a map, draw a stroke, or swipe (direction + distance, with touch input on a phone). ' +
+      'The pointer approaches the source, presses, holds briefly, moves along a curved slow-fast-slow path with slight wobble, pauses, then releases. ' +
+      'Native HTML5 draggable elements are detected and finished with real dragenter/dragover/drop. release:false leaves the press down for page.pointer or another page.drag.',
+    schema: {
+      ...scope,
+      ...locator,
+      x: z.number().optional().describe('With y and no locator: start at this viewport point (CSS px).'),
+      y: z.number().optional(),
+      to_selector: z.string().optional().describe('Drop on this element (its centre).'),
+      to_xpath: z.string().optional(),
+      to_text: z.string().optional(),
+      to_ref: z.string().optional().describe('Snapshot ref of the drop target.'),
+      to_backend_node_id: z.number().optional(),
+      to_nth: z.number().optional(),
+      to_x: z.number().optional().describe('With to_y: end at this viewport point.'),
+      to_y: z.number().optional(),
+      by_x: z.number().optional().describe('End this many px right of the start (negative: left). The usual way to move a slider.'),
+      by_y: z.number().optional().describe('End this many px below the start (negative: above).'),
+      direction: z
+        .enum(['up', 'down', 'left', 'right'])
+        .optional()
+        .describe('Swipe: the way the finger/pointer moves. Without a start locator it starts at the viewport centre.'),
+      distance: z.number().optional().describe('With direction. Default half the viewport.'),
+      button: z.enum(['left', 'right', 'middle']).optional(),
+      duration_ms: z.number().optional().describe('Travel time. Default from distance and target size (Fitts), roughly 250-900ms; a direction swipe defaults to a 150-500ms flick released without a pause.'),
+      steps: z.number().optional().describe('Intermediate moves. Default one per ~16ms of travel.'),
+      hold_ms: z.number().optional().describe('Hold still after pressing, before moving. Default 70-180ms human; raise it (500+) for "press and hold to drag" lists.'),
+      settle_ms: z.number().optional().describe('Hold still at the end before releasing. Default 60-160ms human.'),
+      html5: z.boolean().optional().describe('Default true: detect native draggable and finish with drag events. false: only pointer events.'),
+      release: z.boolean().optional().describe('Default true. false: keep the button/finger down at the end.'),
+      ...gestureMotion,
+    },
+    handler: op(gestureOps.drag),
+  },
+  {
+    name: 'page.long_press',
+    description:
+      'Press and hold on an element or point: long-press menus, "press and hold" buttons, hold-to-confirm, hold-to-record. ' +
+      'Holds for duration_ms, or until until_selector/until_text appears (or disappears with until_gone) and then lets go. ' +
+      'Mouse holds creep by a pixel now and then as a resting hand does. release:false keeps holding so page.drag or page.pointer can continue.',
+    schema: {
+      ...scope,
+      ...locator,
+      x: z.number().optional().describe('With y and no locator: press this viewport point (CSS px).'),
+      y: z.number().optional(),
+      button: z.enum(['left', 'right', 'middle']).optional(),
+      duration_ms: z.number().optional().describe('How long to hold. Default 800; with until_* it is the most it will wait (default 15000, max 120000).'),
+      until_selector: z.string().optional().describe('Release as soon as this CSS selector matches.'),
+      until_text: z.string().optional().describe('Release as soon as this text is on the page.'),
+      until_gone: z.boolean().optional().describe('Invert until_*: release once it is gone.'),
+      release: z.boolean().optional().describe('Default true. false: keep holding after duration_ms.'),
+      ...gestureMotion,
+    },
+    handler: op(gestureOps.longPress),
+  },
+  {
+    name: 'page.pinch',
+    description:
+      'Two-finger touch gesture: pinch to zoom (scale over 1 spreads the fingers, under 1 pinches them together) and/or twist (rotate_deg). ' +
+      'For maps, image viewers, canvases and anything reading multi-touch. Turn on touch emulation first (device.preset) so the page treats it as a touch device.',
+    schema: {
+      ...scope,
+      ...locator,
+      x: z.number().optional().describe('With y: centre of the gesture. Default the element centre, else the viewport centre.'),
+      y: z.number().optional(),
+      scale: z.number().optional().describe('Final finger spread / starting spread. 2 = zoom in, 0.5 = zoom out.'),
+      rotate_deg: z.number().optional().describe('Twist the fingers by this many degrees, clockwise positive.'),
+      start_distance: z.number().optional().describe('Starting gap between the fingers in CSS px. Default 120.'),
+      angle_deg: z.number().optional().describe('Starting angle of the line between the fingers. Default 0 (side by side).'),
+      duration_ms: z.number().optional().describe('Default 450.'),
+      ...gestureMotion,
+    },
+    handler: op(gestureOps.pinch),
+  },
+  {
+    name: 'page.pointer',
+    description:
+      'Raw pointer script for anything the other tools do not cover: draw a shape, hover-then-press, drag with a wheel scroll in the middle, a press in one call and the release in a later one. ' +
+      'actions run in order; each move travels the human path from wherever the pointer is. The held button and position persist per tab between calls. ' +
+      'Example: [{action:"move",selector:"canvas"},{action:"down"},{action:"move",x:300,y:200},{action:"move",x:350,y:260},{action:"up"}].',
+    schema: {
+      ...scope,
+      actions: z
+        .array(
+          z.object({
+            action: z.enum(['move', 'down', 'up', 'click', 'pause', 'wheel']),
+            selector: z.string().optional(),
+            xpath: z.string().optional(),
+            text: z.string().optional(),
+            ref: z.string().optional(),
+            backend_node_id: z.number().optional(),
+            frame_id: z.string().optional(),
+            nth: z.number().optional(),
+            x: z.number().optional(),
+            y: z.number().optional(),
+            button: z.enum(['left', 'right', 'middle']).optional().describe('down/click. Default left.'),
+            duration_ms: z.number().optional().describe('move: travel time. pause: how long. Default 200 for pause.'),
+            delta_x: z.number().optional().describe('wheel.'),
+            delta_y: z.number().optional().describe('wheel. Positive scrolls down.'),
+          }),
+        )
+        .describe('Steps. A locator or x/y on down/up/click/wheel moves there first.'),
+      html5: z.boolean().optional().describe('Default true: a held left button that starts a native HTML5 drag finishes with drag events.'),
+      ...gestureMotion,
+    },
+    handler: op(gestureOps.pointerSequence),
   },
   {
     name: 'page.type',

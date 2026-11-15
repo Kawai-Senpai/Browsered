@@ -930,7 +930,8 @@ Every mutating tool checks this — including the raw `cdp.send` escape hatch.
 ```
 browser.*      list, launch, connect, status, list_targets, set_control_mode, reveal, close
 page.*         navigate, screenshot, snapshot, click, type, press, scroll, extract_text,
-               wait_for, highlight, dialogs, viewport, frames, tabs
+               wait_for, highlight, dialogs, viewport, frames, tabs,
+               drag, long_press, pinch, pointer  (human-shaped gestures)
 locator.*      candidates, check  (locators a durable test can contain)
 qa.*           record_start/stop/status, steps, evidence, scenario_draft, session_events
 dom.*          summary, query, inspect, get_html, set_html, set_attribute, remove, export
@@ -977,6 +978,7 @@ npm run test:guide            # 24 checks: the built-in documentation, against t
 npm run test:qa               # 22 checks: semantic locators, recording, evidence, storageState
 npm run test:hidden           # 27 checks: swallowed errors, dead controls, secure context, orientation
 npm run test:media            # 19 checks: camera, microphone and screen capture with fake devices
+npm run test:gesture          # 10 checks: drag, slider, HTML5 drop, swipe, long press, pinch, held state
 npm run test:real             # headed narrated walkthrough on live sites
 ```
 

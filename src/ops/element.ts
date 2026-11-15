@@ -120,6 +120,26 @@ function locatorSummary(locator: ElementLocator): string {
   return '(no locator)';
 }
 
+/**
+ * Picks which of several matches to use. An explicit nth (>= 0) is honoured
+ * exactly. With no nth (-1) the first VISIBLE match wins: pages routinely ship
+ * a hidden duplicate first (a mobile menu, an SEO copy, a closed dialog), and
+ * taking match 0 then failed every click with not_visible while a visible
+ * match sat right there. With no visible match it falls back to match 0, so a
+ * hidden file input or a hover-only control still resolves.
+ */
+const PICK = `(out, nth) => {
+  if (nth >= 0) return out[nth] || null;
+  const shown = (el) => {
+    if (!el || !el.getClientRects || el.getClientRects().length === 0) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0;
+  };
+  return out.find(shown) || out[0] || null;
+}`;
+
 /** Finds the innermost element whose own text contains the needle. */
 const TEXT_FINDER = `(needle, nth) => {
   const wanted = String(needle).trim().toLowerCase();
@@ -143,7 +163,7 @@ const TEXT_FINDER = `(needle, nth) => {
       if (label.includes(wanted)) out.push(el);
     }
   }
-  return { node: out[nth] || null, count: out.length };
+  return { node: (${PICK})(out, nth), count: out.length };
 }`;
 
 /** Pierces open shadow roots, which a bare querySelectorAll would miss. */
@@ -157,12 +177,17 @@ const CSS_FINDER = `(sel, nth) => {
     for (const el of all) if (el.shadowRoot) walk(el.shadowRoot);
   };
   walk(document);
-  return { node: out[nth] || null, count: out.length };
+  return { node: (${PICK})(out, nth), count: out.length };
 }`;
 
 const XPATH_FINDER = `(expr, nth) => {
   const it = document.evaluate(expr, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-  return { node: it.snapshotItem(nth) || null, count: it.snapshotLength };
+  const out = [];
+  for (let i = 0; i < it.snapshotLength; i++) {
+    const n = it.snapshotItem(i);
+    out.push(n && n.nodeType === 3 ? n.parentElement : n);
+  }
+  return { node: (${PICK})(out, nth), count: it.snapshotLength };
 }`;
 
 interface FinderResult {
@@ -217,8 +242,16 @@ export async function resolveElement(
   instance: BrowserInstance,
   target: ManagedTarget,
   locator: ElementLocator,
+  options: { preferVisible?: boolean } = {},
 ): Promise<ResolvedElement> {
-  const nth = locator.nth ?? 0;
+  /*
+   * preferVisible is opt-in, for the input actions only (click, hover, type,
+   * press, select): there a hidden first match can only fail with not_visible.
+   * Read and DOM tools (inspect, extract_text, remove, css...) keep the exact
+   * old meaning of "match 0", so nobody's existing scripts change behaviour.
+   * -1 tells the finder "no nth given, prefer the first visible match".
+   */
+  const nth = locator.nth ?? (options.preferVisible ? -1 : 0);
   let objectId: string | null = null;
   let matchedCount: number | undefined;
 
@@ -354,6 +387,67 @@ export async function contentCenter(
     width: maxX - minX,
     height: maxY - minY,
   };
+}
+
+/**
+ * contentCenter for controls that only appear on hover (an edit pencil, a row
+ * menu). If the element has no box, move the mouse over its nearest ancestor
+ * that does, give the page a moment to show the control, and measure again.
+ * Without this an agent could see the pencil in a screenshot and still never
+ * click it. `revealed_by` says which ancestor was hovered.
+ */
+export async function revealCenter(
+  session: CdpSession,
+  objectId: string,
+): Promise<BoxCenter & { revealedBy?: string }> {
+  try {
+    return await contentCenter(session, objectId);
+  } catch (error) {
+    if (!(error instanceof AgentBrowserError) || error.code !== 'not_visible') throw error;
+  }
+  let ancestorId: string | undefined;
+  try {
+    const found = await session.send<{ result: RemoteObject }>('Runtime.callFunctionOn', {
+      objectId,
+      returnByValue: false,
+      functionDeclaration: `function () {
+        let el = this.nodeType === 1 ? this.parentElement : this.parentNode;
+        while (el && el !== document.body) {
+          const r = el.getBoundingClientRect();
+          if (r.width >= 4 && r.height >= 4) return el;
+          el = el.parentElement;
+        }
+        return null;
+      }`,
+    });
+    ancestorId = found.result.objectId;
+  } catch {
+    // fall through to the original error
+  }
+  if (!ancestorId) {
+    throw new AgentBrowserError(
+      'not_visible',
+      'Element has no visible content box (display:none, zero size, or fully clipped), and no visible ancestor to hover.',
+    );
+  }
+  try {
+    const box = await contentCenter(session, ancestorId);
+    await session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y, button: 'none' });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const center = await contentCenter(session, objectId);
+    const described = await session.send<{ node: { nodeName: string; attributes?: string[] } }>('DOM.describeNode', {
+      objectId: ancestorId,
+    });
+    return { ...center, revealedBy: describeNode(described.node.nodeName, described.node.attributes) };
+  } catch {
+    throw new AgentBrowserError(
+      'not_visible',
+      'Element has no visible content box, even after hovering its nearest visible ancestor. ' +
+        'It may need a different trigger (focus, a menu button) or is genuinely hidden; try a visible match with nth, or page.click with x/y.',
+    );
+  } finally {
+    await session.trySend('Runtime.releaseObject', { objectId: ancestorId });
+  }
 }
 
 function quadArea(q: number[]): number {

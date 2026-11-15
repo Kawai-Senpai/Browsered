@@ -151,7 +151,7 @@ function describeArgs(shape: z.ZodRawShape): ArgDoc[] {
 const FAMILY_NOTES: Record<string, string> = {
   browser:
     'A browser is launched automatically the first time any tool needs one, so browser.launch is only necessary when you want specific options (headless, profile, proxy, camera/microphone/screen capture via media). browser_id is optional everywhere: omit it and the only running browser is used. browser.status is the cheapest orientation call in the whole server and should be your first move when anything looks wrong, because it names the committed URL, title, load state and HTTP status of every page target.',
-  page: 'The action tools (click, type, press, scroll) report whether the page actually reacted, not merely whether an event was dispatched. Prefer refs from page.snapshot over text locators: text routinely resolves to a span inside the button rather than the button. When an action has more than one possible outcome, race them with page.wait_for(any_of) instead of guessing one and paying a full timeout.',
+  page: 'The action tools (click, type, press, scroll) report whether the page actually reacted, not merely whether an event was dispatched. Prefer refs from page.snapshot over text locators: text routinely resolves to a span inside the button rather than the button. When an action has more than one possible outcome, race them with page.wait_for(any_of) instead of guessing one and paying a full timeout. For anything that needs the pointer to travel, linger or stay down - sliders, drag-and-drop, swipes, long-press, pinch - use page.drag, page.long_press, page.pinch or page.pointer rather than chaining clicks: they move like a hand and the page sees every intermediate event.',
   locator:
     'The bridge between driving a page and writing a test about it. Everywhere else browserd addresses elements by CSS, XPath or a snapshot ref; a durable test cannot contain any of those, because they encode today\'s DOM shape. These two tools answer the question that otherwise gets guessed: which role, label, text or test id addresses this element, and how many things does that locator actually match. Ask before writing the test, not after it fails strict mode.',
   dom: 'Query before you dump. dom.summary describes the structure in a few hundred characters; dom.get_html on a modern app is tens of thousands and mostly framework noise. Selectors pierce shadow DOM.',
@@ -308,6 +308,17 @@ const TOOL_NOTES: Record<string, ToolNote> = {
       'A text locator can resolve to a span inside the button rather than the button; prefer a ref or a selector.',
     ],
     see_also: ['page.snapshot', 'page.wait_for', 'page.expect'],
+  },
+  'page.drag': {
+    when: 'A slider, "slide to unlock", sortable list, kanban card, map pan, canvas stroke, file-tree move, or a swipe on a phone layout.',
+    how: 'Approaches the source, presses, holds briefly, travels a curved slow-fast-slow path to the destination and releases. Native draggable=true elements are detected through Chromium drag interception and finished with real dragenter/dragover/drop, so dataTransfer works.',
+    caveats: [
+      'Sliders: press the thumb or the track and use by_x. Pressing mid-track first sets the value to the middle, exactly as a person would.',
+      'Lists that only start dragging after a long press need hold_ms (500+).',
+      'release:false leaves the press down; page.pointer or another page.drag (without a source) continues it. Gestures share one held state per tab.',
+      'Pass seed to repeat an exact path when a flaky drag needs reproducing; every result reports the seed it used.',
+    ],
+    see_also: ['page.long_press', 'page.pointer', 'page.pinch'],
   },
   'page.type': {
     when: 'Filling inputs.',

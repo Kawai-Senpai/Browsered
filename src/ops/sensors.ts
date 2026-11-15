@@ -174,7 +174,7 @@ function restingMotion(q: Quaternion, prev: Quaternion | null, dtMs: number) {
 }
 
 /** Small seeded PRNG (mulberry32), so a noisy path replays identically. */
-function prng(seed: number): () => number {
+export function prng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -186,7 +186,7 @@ function prng(seed: number): () => number {
 }
 
 /** Standard normal sample (Box-Muller). */
-function gaussian(rand: () => number): number {
+export function gaussian(rand: () => number): number {
   const u = Math.max(rand(), 1e-12);
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rand());
 }

@@ -267,18 +267,88 @@ export async function login(
 
   const steps: Array<Record<string, unknown>> = [];
 
+  /*
+   * Two-step logins (Google, Microsoft) show one field per page: the identifier
+   * page has no password box, and the password page keeps the identifier only
+   * as a hidden input. Typing into a hidden input fails with "DOM.focus: Element
+   * is not focusable", which used to abort the whole login on the password page.
+   * So each field is filled only when a VISIBLE one exists.
+   */
+  const visible = async (selector: string): Promise<boolean> => {
+    const { result } = await target.session.send<{ result: { value?: unknown } }>('Runtime.evaluate', {
+      expression: `[...document.querySelectorAll(${JSON.stringify(selector)})].some((el) => {
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && !el.disabled;
+      })`,
+      returnByValue: true,
+    });
+    return result.value === true;
+  };
+  const userVisible = await visible(userSel);
+  const passVisible = await visible(passSel);
+  // A selector the caller (or the saved credential) named explicitly must
+  // exist: the two-step shortcuts below are only for the default selectors,
+  // so a typo never turns into a half-submitted form.
+  const userExplicit = args.username_selector !== undefined || credential.selectors?.username !== undefined;
+  const passExplicit = args.password_selector !== undefined || credential.selectors?.password !== undefined;
+  const missing = [
+    ...(userExplicit && !userVisible ? [`username_selector ${userSel}`] : []),
+    ...(passExplicit && !passVisible ? [`password_selector ${passSel}`] : []),
+  ];
+  if (missing.length > 0) {
+    throw new AgentBrowserError(
+      'fill_failed',
+      `Selector not found or not visible: ${missing.join(', ')}. Nothing was typed or submitted.`,
+    );
+  }
+  if (!userVisible && !passVisible) {
+    throw new AgentBrowserError(
+      'fill_failed',
+      'No visible username or password field on this page. Nothing was typed. ' +
+        'The page may still be loading, or a "Next"/"Sign in" step must be clicked first; ' +
+        'pass username_selector/password_selector if the fields use unusual markup.',
+    );
+  }
+
   // insert_text is deliberate: synthetic keystrokes silently land nothing on
   // some inputs, and a login that types half a password is worse than one that
   // fails loudly.
-  const userResult = await pageOps.typeText(ctx, {
-    browser_id: args.browser_id,
-    target_id: args.target_id,
-    selector: userSel,
-    text: credential.username,
-    clear: true,
-    insert_text: true,
-  });
-  steps.push({ field: 'username', landed: userResult.landed_characters, of: userResult.characters });
+  if (userVisible) {
+    const userResult = await pageOps.typeText(ctx, {
+      browser_id: args.browser_id,
+      target_id: args.target_id,
+      selector: userSel,
+      text: credential.username,
+      clear: true,
+      insert_text: true,
+    });
+    steps.push({ field: 'username', landed: userResult.landed_characters, of: userResult.characters });
+  } else {
+    steps.push({ field: 'username', skipped: 'no visible username field (two-step login: identifier already chosen)' });
+  }
+
+  if (!passVisible) {
+    // Identifier-only page: submit it and let the caller run login again on
+    // the password page.
+    let submittedUser: Record<string, unknown> | null = null;
+    if (args.submit !== false) {
+      submittedUser = submitSel
+        ? await pageOps.click(ctx, { browser_id: args.browser_id, target_id: args.target_id, selector: submitSel })
+        : await pageOps.press(ctx, { browser_id: args.browser_id, target_id: args.target_id, selector: userSel, key: 'Enter' });
+    }
+    return {
+      site: args.site,
+      origin: credential.origin,
+      username: credential.username,
+      filled: steps,
+      submitted: submittedUser !== null,
+      ...(submittedUser ? { submit_result: submittedUser } : {}),
+      next:
+        'Two-step login: only the username page was shown, and it was submitted. Wait for the password page ' +
+        '(page.wait_for selector input[type=password]) and call credentials.login again.',
+    };
+  }
 
   const password = unseal(credential.sealed);
   let passResult: Record<string, unknown>;

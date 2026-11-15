@@ -11,6 +11,7 @@ import {
   contentCenter,
   evaluate,
   resolveElement,
+  revealCenter,
   type ElementLocator,
   type ResolvedElement,
 } from './element.js';
@@ -1340,11 +1341,11 @@ export async function snapshot(ctx: OpsContext, args: SnapshotOptions): Promise<
  * Locator diagnostics worth echoing on an action: how many elements matched,
  * and whether the chosen one is a passive node inside something clickable.
  */
-function locatorNotes(element: ResolvedElement): Record<string, unknown> {
+export function locatorNotes(element: ResolvedElement): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (element.matchedCount !== undefined && element.matchedCount > 1) {
     out.matched_count = element.matchedCount;
-    out.chose = 'first';
+    out.chose = 'nth if given, else the first visible match';
   }
   if (element.interactiveAncestor) {
     out.warning =
@@ -1354,8 +1355,13 @@ function locatorNotes(element: ResolvedElement): Record<string, unknown> {
   return out;
 }
 
+async function backendIdOf(target: ManagedTarget, objectId: string): Promise<number> {
+  const described = await target.session.send<{ node: { backendNodeId: number } }>('DOM.describeNode', { objectId });
+  return described.node.backendNodeId;
+}
+
 /** CDP mouse events are in CSS pixels; screenshots are in device pixels. */
-async function pointReport(
+export async function pointReport(
   instance: BrowserInstance,
   target: ManagedTarget,
   point: { x: number; y: number },
@@ -1405,7 +1411,7 @@ const READ_MUTATION_FN = `(() => {
   return n;
 })()`;
 
-async function armMutationWatch(instance: BrowserInstance, target: ManagedTarget): Promise<boolean> {
+export async function armMutationWatch(instance: BrowserInstance, target: ManagedTarget): Promise<boolean> {
   try {
     await evaluate(instance, target, {
       expression: ARM_MUTATION_FN,
@@ -1418,7 +1424,7 @@ async function armMutationWatch(instance: BrowserInstance, target: ManagedTarget
   }
 }
 
-async function readMutationWatch(instance: BrowserInstance, target: ManagedTarget): Promise<number> {
+export async function readMutationWatch(instance: BrowserInstance, target: ManagedTarget): Promise<number> {
   try {
     const { result } = await evaluate(instance, target, {
       expression: READ_MUTATION_FN,
@@ -1498,12 +1504,32 @@ export async function click(
     verify?: boolean;
     verify_ms?: number;
     retry_if_unchanged?: boolean;
+    x?: number;
+    y?: number;
   },
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   instance.requireControl('page.click');
-  const element = await resolveElement(instance, target, args);
-  const center = await contentCenter(target.session, element.objectId);
+  const hasLocator =
+    args.selector !== undefined || args.xpath !== undefined || args.text !== undefined ||
+    args.ref !== undefined || args.backend_node_id !== undefined;
+  let element: ResolvedElement;
+  let center: { x: number; y: number; revealedBy?: string };
+  if (!hasLocator && args.x !== undefined && args.y !== undefined) {
+    // Click at a point (CSS px of the viewport, as page.click reports in `at.css`).
+    // Resolves whatever is there, so verify and retry_if_unchanged still work.
+    const hit = await evaluate(instance, target, {
+      expression: `document.elementFromPoint(${Number(args.x)}, ${Number(args.y)})`,
+      returnByValue: false,
+      awaitPromise: false,
+    });
+    if (!hit.result.objectId) throw new NotFoundError('element at point', `${args.x},${args.y}`);
+    element = await resolveElement(instance, target, { backend_node_id: await backendIdOf(target, hit.result.objectId) });
+    center = { x: Number(args.x), y: Number(args.y) };
+  } else {
+    element = await resolveElement(instance, target, args, { preferVisible: true });
+    center = await revealCenter(target.session, element.objectId);
+  }
   const modifiers = modifiersFromNames(args.modifiers);
   const button = args.button ?? 'left';
   const clickCount = args.click_count ?? 1;
@@ -1524,6 +1550,7 @@ export async function click(
       click_count: clickCount,
       ...extra,
       ...locatorNotes(element),
+      ...(center.revealedBy ? { revealed_by_hovering: center.revealedBy } : {}),
     };
     if (!armed) {
       out.hint =
@@ -1579,8 +1606,8 @@ export async function click(
 export async function hover(ctx: OpsContext, args: PageArgs): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   instance.requireControl('page.hover');
-  const element = await resolveElement(instance, target, args);
-  const center = await contentCenter(target.session, element.objectId);
+  const element = await resolveElement(instance, target, args, { preferVisible: true });
+  const center = await revealCenter(target.session, element.objectId);
   await target.session.send('Input.dispatchMouseEvent', {
     type: 'mouseMoved',
     x: center.x,
@@ -1649,7 +1676,7 @@ export async function typeText(
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   instance.requireControl('page.type');
-  const element = await resolveElement(instance, target, args);
+  const element = await resolveElement(instance, target, args, { preferVisible: true });
   await target.session.trySend('DOM.scrollIntoViewIfNeeded', { objectId: element.objectId });
   await target.session.send('DOM.focus', { objectId: element.objectId });
 
@@ -1758,7 +1785,7 @@ export async function press(
   const { instance, target } = await pageOf(ctx, args);
   instance.requireControl('page.press');
   if (args.selector || args.ref || args.xpath || args.text || args.backend_node_id !== undefined) {
-    const element = await resolveElement(instance, target, args);
+    const element = await resolveElement(instance, target, args, { preferVisible: true });
     await target.session.send('DOM.focus', { objectId: element.objectId });
   }
   const { modifiers, key, names } = parseChord(args.key);
@@ -1856,7 +1883,7 @@ export async function selectOption(
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   instance.requireControl('page.select_option');
-  const element = await resolveElement(instance, target, args);
+  const element = await resolveElement(instance, target, args, { preferVisible: true });
   // callFunctionOn keeps the element identity rather than re-querying it, so a
   // re-render between resolve and act cannot swap the target out from under us.
   const response = await target.session.send<{
