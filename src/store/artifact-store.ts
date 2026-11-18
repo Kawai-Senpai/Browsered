@@ -16,6 +16,7 @@ export type ArtifactKind =
   | 'dom_export'
   | 'script_source'
   | 'screenshot'
+  | 'attention_overlay'
   | 'netlog'
   | 'trace'
   | 'cpu_profile'

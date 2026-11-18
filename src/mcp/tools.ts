@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { OpsContext, ToolRun } from '../ops/context.js';
 import * as artifactOps from '../ops/artifact.js';
 import * as appStateOps from '../ops/appstate.js';
+import * as attentionOps from '../ops/attention.js';
 import * as auditOps from '../ops/audit.js';
 import * as batchOps from '../ops/batch.js';
 import * as browserOps from '../ops/browser.js';
@@ -47,6 +48,17 @@ const targetId = {
   target_id: z.string().optional().describe('Target handle (tgt_*). Omit for the active page.'),
 };
 const scope = { ...browserId, ...targetId };
+const attentionModel = {
+  backend: z.enum(['fast', 'deep']).optional().describe('Fast UI saliency heuristic (default) or pretrained UNISAL model. Deep requires the HotGaze deep extra.'),
+  faces: z.boolean().optional().describe('Enable the optional YuNet face-attention layer. Default false.'),
+  regions: z.array(z.object({
+    name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    x: z.number().int().nonnegative(),
+    y: z.number().int().nonnegative(),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+  })).max(30).optional().describe('Named rectangles in actual PNG pixels, measured from the top left.'),
+};
 const locator = {
   selector: z.string().optional().describe('CSS selector; pierces shadow DOM.'),
   xpath: z.string().optional().describe('XPath expression.'),
@@ -134,6 +146,29 @@ export function op<A>(
 }
 
 export const TOOLS: ToolDef[] = [
+  {
+    name: 'attention.analyze',
+    description: 'Predict visual attention on a saved PNG screenshot with HotGaze. Returns focal points, optional region scores, and a heatmap overlay.',
+    schema: {
+      screenshot_id: z.string().describe('PNG artifact ID from page.screenshot. Use mode:viewport for a first-glance review.'),
+      ...attentionModel,
+      overlay: z.boolean().optional().describe('Generate and store the PNG overlay. Default true.'),
+      return_image: z.boolean().optional().describe('Include the overlay as an MCP image. Default true when overlay is enabled.'),
+    },
+    handler: op(attentionOps.analyze),
+    readOnly: true,
+  },
+  {
+    name: 'attention.compare',
+    description: 'Compare predicted attention on two same-sized PNG screenshot artifacts. Regions apply to the same pixel coordinates in both screenshots.',
+    schema: {
+      baseline_id: z.string(),
+      candidate_id: z.string(),
+      ...attentionModel,
+    },
+    handler: op(attentionOps.compare),
+    readOnly: true,
+  },
   /* ------------------------------- browser ------------------------------- */
   {
     name: 'browser.list',

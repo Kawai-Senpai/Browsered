@@ -169,6 +169,10 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'skeleton.emit turns that into html, css or a React/Vue/Svelte component, and ' +
         'skeleton.preview draws it over the live page so one screenshot shows whether ' +
         'the placeholder actually lines up.\n\n' +
+        'For UI hierarchy and visual clutter, capture a PNG viewport with page.screenshot ' +
+        'and pass its artifact ID to attention.analyze for a predicted gaze heatmap and region scores. ' +
+        'Use attention.compare for same-size before and after captures, and page.audit_layout ' +
+        'to check responsive geometry. Judge the predictions alongside the UI task and accessibility.\n\n' +
         'Reading documentation is worth doing once rather than every time. doc.save ' +
         'captures a page as a searchable document: it scrolls until the lazily-revealed ' +
         'sections are actually in the DOM, keeps headings, code fences, tables and link ' +

@@ -743,6 +743,25 @@ the daemon home, and which Chromium was resolved and from where.
 
 ---
 
+## Visual attention and UI hierarchy
+
+Browsered uses [HotGaze](https://github.com/suryakosaraju/hotgaze) to predict which
+parts of a screenshot may draw the eye. The MCP host needs `uv` on its PATH.
+The first attention call automatically fetches a pinned HotGaze release and its
+dependencies into the local uv cache. The default `fast` backend needs no model
+weights. Choose `backend:"deep"` to fetch the optional UNISAL dependencies and
+weights, or `faces:true` to enable HotGaze's YuNet face layer. Allow network access
+and a longer MCP client timeout for first use. For a managed or offline setup,
+set `AGENTBROWSER_HOTGAZE` to an existing compatible executable with any required
+weights already cached. Screenshot analysis runs locally.
+
+1. Capture the loaded state with `page.screenshot { "mode": "viewport", "format": "png", "return_image": false }`. Save the returned artifact ID.
+2. Call `attention.analyze` with that ID as `screenshot_id`. It returns focal points, scores for any named rectangles, and a PNG overlay. Use `overlay:false` for scores only.
+3. Inspect strong hotspots on secondary controls, decoration, or competing actions. Check the intended task, text legibility and spacing, and use `page.audit_layout` for overflow and responsive geometry. The heatmap is a model prediction of saliency. Treat usability and accessibility as separate checks.
+4. Capture the revised state at the same viewport, scroll position and device scale. Call `attention.compare` with `baseline_id` and `candidate_id` to see spatial and region-share changes. Regions use PNG pixels and stay at the same coordinates in both variants. If the CTA moved or resized, score it separately in each capture with its new bounds.
+
+Use `guide.tool { "name": "attention.analyze" }` for the argument schema and examples.
+
 ## Skeleton screens measured from the real UI
 
 A loading placeholder is only convincing when its boxes sit where the real content
@@ -942,6 +961,7 @@ network.*      list_requests, get_request, get_body, summarize, search_bodies,
                list_websockets, ws_messages, export_har, simulate, clear
 storage.*      local/session, cookies, indexeddb, caches, usage, export, import
 workflow.*     save, run, list, show, delete
+attention.*    analyze, compare  (predicted gaze on screenshot artifacts)
 skeleton.*     capture, emit, preview, list, show, delete
 app.*          error_state, diagnose_interaction  (what the app holds, not what the platform reported)
 guide.*        orient, search, tool, topic, list  (browserd's own documentation)
