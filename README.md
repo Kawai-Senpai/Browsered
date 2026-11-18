@@ -760,6 +760,9 @@ weights already cached. Screenshot analysis runs locally.
 3. Inspect strong hotspots on secondary controls, decoration, or competing actions. Check the intended task, text legibility and spacing, and use `page.audit_layout` for overflow and responsive geometry. The heatmap is a model prediction of saliency. Treat usability and accessibility as separate checks.
 4. Capture the revised state at the same viewport, scroll position and device scale. Call `attention.compare` with `baseline_id` and `candidate_id` to see spatial and region-share changes. Regions use PNG pixels and stay at the same coordinates in both variants. If the CTA moved or resized, score it separately in each capture with its new bounds.
 
+For image-heavy screens or an ambiguous fast result, rerun the same artifact
+with `attention.analyze { "screenshot_id": "art_...", "backend": "deep" }`.
+`attention.compare` also accepts `backend:"deep"` and uses it for both variants.
 Use `guide.tool { "name": "attention.analyze" }` for the argument schema and examples.
 
 ## Skeleton screens measured from the real UI

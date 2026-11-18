@@ -434,7 +434,10 @@ const TOOL_NOTES: Record<string, ToolNote> = {
       'Use a clean viewport PNG with the target state fully rendered. Coordinates use PNG pixels, which can differ from CSS pixels.',
       'These are model predictions. Review accessibility and the intended task independently. Score-only runs can set overlay:false.',
     ],
-    examples: ['attention.analyze { "screenshot_id": "art_...", "regions": [{ "name": "cta", "x": 40, "y": 150, "width": 90, "height": 40 }] }'],
+    examples: [
+      'attention.analyze { "screenshot_id": "art_...", "regions": [{ "name": "cta", "x": 40, "y": 150, "width": 90, "height": 40 }] }',
+      'attention.analyze { "screenshot_id": "art_...", "backend": "deep" }',
+    ],
     see_also: ['page.screenshot', 'attention.compare', 'page.audit_layout'],
   },
   'attention.compare': {

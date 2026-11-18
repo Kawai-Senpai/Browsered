@@ -49,7 +49,7 @@ const targetId = {
 };
 const scope = { ...browserId, ...targetId };
 const attentionModel = {
-  backend: z.enum(['fast', 'deep']).optional().describe('Fast UI saliency heuristic (default) or pretrained UNISAL model. Deep requires the HotGaze deep extra.'),
+  backend: z.enum(['fast', 'deep']).optional().describe('Fast UI saliency heuristic (default) or pretrained UNISAL for image-heavy screens and second estimates. Deep dependencies and weights download automatically on first use with the default uv runner.'),
   faces: z.boolean().optional().describe('Enable the optional YuNet face-attention layer. Default false.'),
   regions: z.array(z.object({
     name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),

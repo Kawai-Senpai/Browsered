@@ -171,6 +171,9 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'the placeholder actually lines up.\n\n' +
         'For UI hierarchy and visual clutter, capture a PNG viewport with page.screenshot ' +
         'and pass its artifact ID to attention.analyze for a predicted gaze heatmap and region scores. ' +
+        'Start with fast for typical UI. Pass backend:"deep" to either attention tool for a ' +
+        'second estimate when photography dominates the screen or fast gives an ambiguous result. ' +
+        'The first deep run fetches UNISAL automatically, so allow extra time. ' +
         'Use attention.compare for same-size before and after captures, and page.audit_layout ' +
         'to check responsive geometry. Judge the predictions alongside the UI task and accessibility.\n\n' +
         'Reading documentation is worth doing once rather than every time. doc.save ' +
