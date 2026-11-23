@@ -11,7 +11,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -85,14 +85,54 @@ const FIXTURE = `<!doctype html><title>gesture fixture</title>
   hold.addEventListener('pointermove', () => log.hold.push({ t: 'move', at: performance.now() }));
   const zoom = document.getElementById('zoom');
   const spread = (e) => e.touches.length < 2 ? null : Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  const angle = (e) => Math.atan2(e.touches[1].clientY - e.touches[0].clientY, e.touches[1].clientX - e.touches[0].clientX) * 180 / Math.PI;
   zoom.addEventListener('touchstart', (e) => { log.zoom.max = Math.max(log.zoom.max, e.touches.length); const d = spread(e); if (d && log.zoom.first === null) log.zoom.first = d; }, { passive: true });
-  zoom.addEventListener('touchmove', (e) => { log.zoom.moves++; const d = spread(e); if (d) log.zoom.last = d; }, { passive: true });
+  zoom.addEventListener('touchmove', (e) => { log.zoom.moves++; const d = spread(e); if (d) { log.zoom.last = d; log.zoom.angle = angle(e); } }, { passive: true });
 </script>`;
+
+const MOBILE_FIXTURE = `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { margin: 0; min-height: 2200px; }
+  canvas { display: block; width: 100%; height: 500px; background: #eef; }
+  input { position: absolute; left: 260px; top: 60px; width: 24px; height: 24px; margin: 0; }
+  #far { position: absolute; top: 1750px; }
+</style>
+<canvas width="320" height="500" aria-label="Gesture target"></canvas>
+<input type="checkbox">
+<div id="far">Offscreen drop target</div>
+<script>
+  const canvas = document.querySelector('canvas');
+  window.trace = [];
+  let started = 0;
+  for (const type of ['pointerdown', 'pointerup', 'pointercancel', 'click', 'touchstart']) {
+    canvas.addEventListener(type, e => trace.push({
+      type, target: e.target.tagName, input: e.pointerType, x: e.clientX, y: e.clientY, trusted: e.isTrusted,
+    }));
+  }
+  canvas.addEventListener('touchstart', () => { started = performance.now(); }, { passive: true });
+  canvas.addEventListener('touchmove', e => {
+    if (performance.now() - started >= 300 && e.cancelable) {
+      e.preventDefault();
+      trace.push({ type: 'drag', trusted: e.isTrusted });
+    }
+  }, { passive: false });
+</script>`;
+
+const LAYER_FIXTURE = `<!doctype html><meta charset="utf-8"><title>Project tasks</title>
+<style>
+body{margin:0;background:#142232;color:white;font:16px system-ui}
+main{position:relative;z-index:1;margin:76px 38px 0;width:352px;padding:20px;background:#223957;border-radius:12px;box-sizing:border-box}
+header{position:fixed;inset:0 0 auto;height:136px;z-index:10;background:#3e507d;padding:20px;box-sizing:border-box}
+#menu{position:absolute;z-index:999;right:18px;top:27px;width:145px;height:100px;background:#13665a;padding:12px;will-change:transform}
+</style>
+<header id="header">Projects / April release</header>
+<main id="board"><h1>Tasks</h1><button id="filter">Filter tasks</button>
+<aside id="menu">To do<br>Doing<br>Done</aside></main>`;
 
 async function startFixture() {
   const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(FIXTURE);
+    res.end(req.url === '/layers' ? LAYER_FIXTURE : req.url?.startsWith('/mobile?') ? MOBILE_FIXTURE : FIXTURE);
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return { url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise((r) => server.close(r)) };
@@ -108,8 +148,12 @@ async function connect() {
   const client = new Client({ name: 'browserd-gesture-test', version: '1.0.0' });
   await client.connect(transport);
   let browserId = null;
+  let targetId = null;
   const call = async (name, args = {}) => {
     const scoped = browserId && name !== 'browser.launch' && args.browser_id === undefined ? { ...args, browser_id: browserId } : args;
+    if (targetId && args.target_id === undefined && (name.startsWith('page.') || name === 'device.viewport' || name === 'js.evaluate')) {
+      scoped.target_id = targetId;
+    }
     const res = await client.callTool({ name, arguments: scoped });
     const text = res.content.find((c) => c.type === 'text')?.text ?? '{}';
     let payload;
@@ -123,9 +167,11 @@ async function connect() {
       err.payload = payload;
       throw err;
     }
+    const image = res.content.find((c) => c.type === 'image');
+    if (image) payload.image_data = image.data;
     return payload;
   };
-  return { call, use: (id) => (browserId = id), close: () => client.close() };
+  return { call, use: (id) => (browserId = id), useTarget: (id) => (targetId = id), close: () => client.close() };
 }
 
 async function live(fixture) {
@@ -239,14 +285,154 @@ async function live(fixture) {
     });
 
     area('page.pinch');
-    await check('two fingers spread to twice their distance', async () => {
-      await mcp.call('device.viewport', { width: 1000, height: 700, touch: true });
-      const res = await mcp.call('page.pinch', { selector: '#zoom', scale: 2, start_distance: 100 });
+    await mcp.call('device.viewport', { width: 1000, height: 700, touch: true });
+    await check('two fingers spread to twice their distance and rotate around viewport coordinates', async () => {
+      const res = await mcp.call('page.pinch', { x: 650, y: 230, scale: 2, start_distance: 100, rotate_deg: 45 });
       const z = await read('log.zoom');
       must(z.max === 2, `max simultaneous touches ${z.max}`);
       must(z.moves >= 5, `only ${z.moves} touchmoves`);
       must(z.first && z.last && Math.abs(z.last / z.first - 2) < 0.1, `spread ${z.first} -> ${z.last}`);
+      must(Math.abs(z.angle - 45) < 3, `final angle ${z.angle}°`);
+      await reset();
+      await mcp.call('page.drag', { selector: '#pad', input: 'touch', by_x: -80, duration_ms: 250, verify: false });
+      must(await read("log.touch.some(e => e.t === 'touchmove')"), 'the first touch drag after a pinch did not reach the page');
       return `spread ${Math.round(z.first)} -> ${Math.round(z.last)} (seed ${res.seed})`;
+    });
+
+    area('mobile screen coordinates');
+    const mobileTab = await mcp.call('page.new_tab');
+    mcp.useTarget(mobileTab.target_id);
+    await mcp.call('page.activate_tab');
+    await mcp.call('device.viewport', { width: 320, height: 640, mobile: true, touch: true, device_scale_factor: 3 });
+    let mobileRun = 0;
+    const mobile = async () => {
+      await mcp.call('page.navigate', { url: new URL(`/mobile?run=${++mobileRun}`, fixture.url).href });
+      must(await read('Array.isArray(window.trace) && scrollY === 0'), 'fixture was not ready at the top of the page');
+      must(await read("navigator.maxTouchPoints === 5"), 'page did not detect five emulated touch contacts');
+    };
+    await check('click and tap exact CSS coordinates on canvas at 3x DPR', async () => {
+      await mobile();
+      must((await read('devicePixelRatio')) === 3, 'fixture did not use 3x DPR');
+      for (const [spacing, maxWidth] of [[40, undefined], [20, 160]]) {
+        const shot = await mcp.call('page.screenshot', { grid: { spacing }, max_width: maxWidth });
+        must(shot.grid.spacing === spacing && shot.grid.width === 320 && shot.grid.units === 'viewport_css_px', JSON.stringify(shot.grid));
+        const line = await read(`(async () => {
+          const img = new Image();
+          img.src = 'data:image/png;base64,${shot.image_data}';
+          await img.decode();
+          const c = document.createElement('canvas');
+          c.width = img.width;
+          c.height = img.height;
+          const g = c.getContext('2d');
+          g.drawImage(img, 0, 0);
+          const x = Math.round(${spacing} * c.width / 320);
+          const y = Math.round(235 * c.height / 640);
+          const unmarked = g.getImageData(x + 9, y, 1, 1).data[0];
+          return Math.min(g.getImageData(x - 1, y, 1, 1).data[0], g.getImageData(x, y, 1, 1).data[0]) < unmarked - 30;
+        })()`);
+        must(line, `image was missing its vertical grid line at x=${spacing}`);
+      }
+      for (const [input, x, y] of [['mouse', 52, 73], ['touch', 187, 114]]) {
+        await mcp.call('page.click', { x, y, input, verify: false });
+        const last = await read("trace.filter(e => e.type === 'click').at(-1)");
+        must(last?.x === x && last?.y === y && last.input === input && last.trusted, JSON.stringify(last));
+      }
+      await mcp.call('page.click', { x: 280, y: 80, input: 'touch', verify: false });
+      must(await read("document.querySelector('input').checked"), 'coordinate tap did not toggle the unnamed checkbox');
+    });
+    await check('mouse drag follows arbitrary coordinates without a locator', async () => {
+      await mobile();
+      await mcp.call('page.pointer', {
+        input: 'mouse', human: false, html5: false, verify: false,
+        actions: [{ action: 'down', x: 53, y: 40 }, { action: 'move', x: 140, y: 85 }, { action: 'up', x: 180, y: 130 }],
+      });
+      const events = await read("trace.filter(e => e.type === 'pointerdown' || e.type === 'pointerup')");
+      must(events.length === 2 && events.every(e => e.input === 'mouse' && e.trusted), JSON.stringify(events));
+      must(events[0].x === 53 && events[0].y === 40 && events[1].x === 180 && events[1].y === 130, JSON.stringify(events));
+    });
+    await check('a quick touch swipe scrolls through Chromium and cancels the page pointer', async () => {
+      await mobile();
+      await mcp.call('page.drag', { x: 140, y: 180, direction: 'up', distance: 145, input: 'touch', seed: 10, verify: false })
+        .catch(async error => { throw new Error(`${error.message} trace: ${JSON.stringify(await read('trace'))}`); });
+      const result = await read("({ y: scrollY, trace })");
+      must(result.y >= 100 && result.trace.some(e => e.type === 'pointercancel') && !result.trace.some(e => e.type === 'drag'), JSON.stringify(result));
+    });
+    await check('a touch hold and drag drops at the requested coordinates without scrolling', async () => {
+      await mobile();
+      const res = await mcp.call('page.drag', { x: 140, y: 180, to_x: 160, to_y: 45, hold_ms: 500, seed: 10, verify: false })
+        .catch(async error => { throw new Error(`${error.message} trace: ${JSON.stringify(await read('trace'))}`); });
+      const result = await read("({ y: scrollY, trace })");
+      const last = result.trace.at(-1);
+      must(res.input === 'touch' && result.y === 0 && result.trace.some(e => e.type === 'drag' && e.trusted), JSON.stringify(result));
+      must(last?.type === 'pointerup' && last.x === 160 && last.y === 45, JSON.stringify(last));
+    });
+    await check('a locator drag with no shared viewport refuses before pressing', async () => {
+      await mobile();
+      try {
+        await mcp.call('page.drag', { selector: 'canvas', to_selector: '#far', verify: false });
+      } catch (error) {
+        must(error.payload?.code === 'source_offscreen' && (await read('trace.length')) === 0, error.message);
+        return;
+      }
+      throw new Error('offscreen source should fail');
+    });
+
+    area('exploded layer inspection');
+    await mcp.call('page.navigate', { url: new URL('/layers', fixture.url).href });
+    let viewer;
+    await check('DOM view sends a PNG and keeps the menu under its DOM parent', async () => {
+      const view = await mcp.call('inspector.layer_view', { target_id: mobileTab.target_id, mode: 'dom' });
+      const menu = view.layers.find(layer => layer.label === 'aside#menu');
+      const board = view.layers.find(layer => layer.label === 'main#board');
+      must(menu && board && menu.parent_backend_node_id === board.backend_node_id && menu.level > board.level, JSON.stringify(view.layers));
+      const png = Buffer.from(view.image_data, 'base64');
+      must(png.readUInt32BE(16) === 1150 && png.readUInt32BE(20) === 620, 'missing or invalid PNG');
+    });
+    await check('stacking view shows a high local z-index painting below the header', async () => {
+      const view = await mcp.call('inspector.layer_view', { target_id: mobileTab.target_id, mode: 'z_index', explode: 96 });
+      const menu = view.layers.find(layer => layer.label === 'aside#menu');
+      const header = view.layers.find(layer => layer.label === 'header#header');
+      must(menu?.z_index === '999' && header?.z_index === '10' && menu.paint_order < header.paint_order, JSON.stringify(view.layers));
+      viewer = readFileSync(view.interactive_viewer.path, 'utf8');
+    });
+    await check('composited view reports Chromium layers and replays their paint', async () => {
+      const view = await mcp.call('inspector.layer_view', { target_id: mobileTab.target_id, mode: 'composited' });
+      must(view.layers.some(layer => layer.layer_id && layer.draws_content && layer.paint_replayed), JSON.stringify(view.layers));
+      must(view.layers.some(layer => layer.reasons?.length), 'missing compositor reasons');
+    });
+    await check('focus crops the scene and reports the actual hit stack', async () => {
+      const view = await mcp.call('inspector.layer_view', {
+        target_id: mobileTab.target_id, mode: 'z_index', selector: '#menu',
+        point: { x: 240, y: 117 }, radius: 60, max_layers: 4,
+      });
+      must(view.region[2] === 120 && view.layers.some(layer => layer.backend_node_id === view.focus_backend_node_id), JSON.stringify(view.region));
+      must(view.hit_test_front_to_back[0]?.id === 'header' && view.hit_test_front_to_back.some(element => element.id === 'menu'), JSON.stringify(view.hit_test_front_to_back));
+      const isolated = await mcp.call('inspector.layer_view', {
+        target_id: mobileTab.target_id, mode: 'z_index', selector: '#menu', isolate: true,
+      });
+      must(isolated.diagram.plates.length === 1 && isolated.layers[isolated.diagram.plates[0].number - 1].label === 'aside#menu', JSON.stringify(isolated.diagram));
+    });
+    await check('standalone viewer redraws and supports selecting and isolating a layer', async () => {
+      must(viewer, 'viewer was not exported');
+      await mcp.call('page.navigate', { url: 'data:text/html;charset=utf-8,' + encodeURIComponent(viewer) });
+      const changed = await read(`(async () => {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const canvas = document.querySelector('canvas');
+        const before = canvas.toDataURL();
+        const control = document.querySelector('#explode');
+        control.value = 30;
+        control.dispatchEvent(new Event('input'));
+        const moved = before !== canvas.toDataURL();
+        const rect = canvas.getBoundingClientRect();
+        canvas.dispatchEvent(new MouseEvent('click', { clientX: rect.x + rect.width * 0.82, clientY: rect.y + rect.height * 0.23 }));
+        const focused = document.querySelector('#focus').value !== '-1';
+        const all = canvas.toDataURL();
+        const isolate = document.querySelector('#isolate');
+        isolate.checked = true;
+        isolate.dispatchEvent(new Event('input'));
+        return moved && focused && all !== canvas.toDataURL();
+      })()`);
+      must(changed, 'viewer did not redraw, focus a legend row, or isolate its layer');
     });
 
     await mcp.call('browser.close').catch(() => {});

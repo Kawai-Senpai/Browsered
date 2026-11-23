@@ -365,8 +365,9 @@ export interface BoxCenter {
 export async function contentCenter(
   session: CdpSession,
   objectId: string,
+  scrollIntoView = true,
 ): Promise<BoxCenter> {
-  await session.trySend('DOM.scrollIntoViewIfNeeded', { objectId });
+  if (scrollIntoView) await session.trySend('DOM.scrollIntoViewIfNeeded', { objectId });
   const { quads } = await session.send<{ quads: number[][] }>('DOM.getContentQuads', { objectId });
   const quad = quads?.find((q) => quadArea(q) > 1);
   if (!quad) {

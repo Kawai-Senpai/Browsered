@@ -97,6 +97,14 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'New here? Call guide.orient once: it returns every tool family, what each ' +
         'is for, which tool fits the situations that come up most, and the techniques ' +
         'sessions habitually skip. One call beats discovering 200+ tools by trial.\n\n' +
+        'When reviewing visual hierarchy, CTA prominence, or clutter, use attention.analyze before drawing conclusions. ' +
+        'Capture page.screenshot with {mode:"viewport",format:"png",return_image:false}, then pass artifact.artifact_id as screenshot_id. ' +
+        'Use a clean screenshot without grid or highlight. Start with backend:"fast" and inspect the heatmap or focal points. ' +
+        'For a redesign or before/after review, use attention.compare with same-sized PNG captures. ' +
+        'Report predicted attention alongside what you see on the page.\n\n' +
+        'If a menu is behind a header or a visible control seems covered, use inspector.layer_view with mode:"z_index" for an exploded image and Chromium paint order. ' +
+        'Use mode:"dom" for nesting and mode:"composited" for browser render layers. To investigate a crowded spot, pass selector plus radius, or point plus radius for a crop and a front-to-back hit stack. ' +
+        'Match image labels to the returned numbered rows, then use inspector.element with a backend_node_id to inspect a node.\n\n' +
         'Investigating a page: work query-first. dom.summary before dom.get_html, ' +
         'network.summarize before network.list_requests, js.search_source before ' +
         'js.get_source. Large payloads are stored as artifacts and read with ' +
@@ -169,13 +177,10 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         'skeleton.emit turns that into html, css or a React/Vue/Svelte component, and ' +
         'skeleton.preview draws it over the live page so one screenshot shows whether ' +
         'the placeholder actually lines up.\n\n' +
-        'For UI hierarchy and visual clutter, capture a PNG viewport with page.screenshot ' +
-        'and pass its artifact ID to attention.analyze for a predicted gaze heatmap and region scores. ' +
-        'Start with fast for typical UI. Pass backend:"deep" to either attention tool for a ' +
+        'Pass backend:"deep" to either attention tool for a ' +
         'second estimate when photography dominates the screen or fast gives an ambiguous result. ' +
         'The first deep run fetches UNISAL automatically, so allow extra time. ' +
-        'Use attention.compare for same-size before and after captures, and page.audit_layout ' +
-        'to check responsive geometry. Judge the predictions alongside the UI task and accessibility.\n\n' +
+        'Use page.audit_layout to check responsive geometry. Judge the predictions alongside the UI task and accessibility.\n\n' +
         'Reading documentation is worth doing once rather than every time. doc.save ' +
         'captures a page as a searchable document: it scrolls until the lazily-revealed ' +
         'sections are actually in the DOM, keeps headings, code fences, tables and link ' +

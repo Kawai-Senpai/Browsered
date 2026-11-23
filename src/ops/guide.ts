@@ -302,13 +302,13 @@ const TOOL_NOTES: Record<string, ToolNote> = {
   },
   'page.click': {
     when: 'Any activation. Prefer it over dispatching events yourself.',
-    how: 'Resolves the locator, scrolls it into view, and dispatches a real input sequence at the element centre. It then watches the DOM and reports observed_change: whether the application actually reacted.',
+    how: 'Give a locator to click its centre or pass x and y in viewport CSS pixels to click a point from a screenshot. Use input:"touch" for a tap or input:"mouse" for a mouse click. The default chooses based on the tab’s touch emulation.',
     caveats: [
       '"Input was dispatched" and "the app handled it" are different facts. If observed_change is false, the click did not do what you think, even though the call succeeded.',
       'retry_if_unchanged:true falls back to the element\'s own .click(), which reaches framework handlers that a synthetic event sometimes misses.',
       'A text locator can resolve to a span inside the button rather than the button; prefer a ref or a selector.',
     ],
-    see_also: ['page.snapshot', 'page.wait_for', 'page.expect'],
+    see_also: ['page.snapshot', 'page.screenshot', 'page.wait_for', 'page.expect'],
   },
   'page.drag': {
     when: 'A slider, "slide to unlock", sortable list, kanban card, map pan, canvas stroke, file-tree move, or a swipe on a phone layout.',
@@ -316,6 +316,7 @@ const TOOL_NOTES: Record<string, ToolNote> = {
     caveats: [
       'Sliders: press the thumb or the track and use by_x. Pressing mid-track first sets the value to the middle, exactly as a person would.',
       'Lists that only start dragging after a long press need hold_ms (500+).',
+      'For a coordinate-only drag, supply x and y for the start and to_x and to_y for the end. All coordinates are viewport CSS pixels.',
       'release:false leaves the press down; page.pointer or another page.drag (without a source) continues it. Gestures share one held state per tab.',
       'Pass seed to repeat an exact path when a flaky drag needs reproducing; every result reports the seed it used.',
     ],

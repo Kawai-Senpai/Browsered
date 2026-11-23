@@ -277,6 +277,51 @@ network.get_body    { request_id, as_json: true }
 browser, or launches one. Pass it when more than one is open — with several
 running, omitting it is an error rather than a guess.
 
+### Click or drag from a screenshot
+
+Use a viewport screenshot to pick a point when a visible control has no useful
+name, ref, or selector. Add `grid` to label the x-axis across the top and the
+y-axis down the left. Read the numbers directly as viewport CSS pixels, even
+on a high-DPI screenshot or a scaled preview. Use `grid: {}` for 80 px spacing,
+or choose a spacing from 16 to 1,000 px. At high densities some ticks are
+left unlabeled to keep the numbers readable.
+
+```text
+page.screenshot { "grid": { "spacing": 40 } }
+page.click { "x": 42, "y": 120 }
+page.click { "x": 42, "y": 120, "input": "touch" }
+page.drag  { "x": 80, "y": 320, "to_x": 120, "to_y": 155, "input": "touch", "hold_ms": 500 }
+```
+
+Use `page.pointer` with coordinate moves and pauses for a path with several
+waypoints. Enable touch emulation with `device.preset` or `device.viewport`
+if the page chooses its UI based on touch support. Verify what actually
+happened after an input, such as whether the checkbox changed or the
+application saved the card's new status.
+
+### Explore the page in layers
+
+`inspector.layer_view` returns a PNG, numbered layer details, and an optional
+standalone HTML viewer with rotation, tilt, focus, and animated separation.
+Choose `dom` for nesting, `z_index` for stacking contexts ordered by Chromium
+paint order, or `composited` for the compositor tree and available paint replay.
+
+```text
+inspector.layer_view { "mode": "z_index", "selector": "#menu", "radius": 180 }
+inspector.layer_view { "mode": "z_index", "point": { "x": 240, "y": 117 }, "radius": 120 }
+inspector.layer_view { "mode": "composited", "explode": 95, "angle": -30 }
+```
+
+A point uses viewport CSS pixels and returns the browser's hit-test stack,
+front to back. Match numbered layers to their backend node IDs and pass one
+to `inspector.element` or another layer capture. The overview leaves out
+tiny decorations and redundant DOM wrappers. Use `detail:"all"` when those
+layers matter, or `isolate:true` with a layer selector to inspect just that
+plane. In the HTML viewer you can click a plane or legend row to focus it.
+DOM and stacking views show
+main-document bounding boxes. Compositor paint replay is limited to eight
+drawn layers and depends on Chromium's available snapshots.
+
 ### Things that will bite an agent
 
 | Symptom | Cause and fix |

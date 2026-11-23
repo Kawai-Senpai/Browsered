@@ -31,10 +31,11 @@ import type { BrowserInstance } from '../browser/instance.js';
 import type { ManagedTarget } from '../browser/target-manager.js';
 import { AgentBrowserError } from '../util/errors.js';
 import type { OpsContext } from './context.js';
-import { evaluate, resolveElement, revealCenter, type ElementLocator } from './element.js';
+import { contentCenter, evaluate, resolveElement, revealCenter, type ElementLocator } from './element.js';
 import { modifiersFromNames } from './keys.js';
 import { armMutationWatch, locatorNotes, pointReport, readMutationWatch, type PageArgs } from './page.js';
 import { gaussian, prng } from './sensors.js';
+import { cancelTouch, sendTouch } from './touch.js';
 
 type Button = 'left' | 'right' | 'middle';
 type InputKind = 'mouse' | 'touch';
@@ -118,6 +119,7 @@ function humanPath(
   rand: () => number,
   curve: number,
   jitterPx: number,
+  flick: boolean,
 ): PathPoint[] {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
@@ -134,7 +136,7 @@ function humanPath(
   const out: PathPoint[] = [];
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
-    const s = minJerk(t);
+    const s = flick ? t * t * (2 - t) : minJerk(t);
     const u = 1 - s;
     const bx = u * u * u * from.x + 3 * u * u * s * c1.x + 3 * u * s * s * c2.x + s * s * s * to.x;
     const by = u * u * u * from.y + 3 * u * u * s * c1.y + 3 * u * s * s * c2.y + s * s * s * to.y;
@@ -182,13 +184,23 @@ class Pointer {
     return { x: p.x, y: p.y, radiusX: 4, radiusY: 4, force: 0.6, id: 0 };
   }
 
+  private async touch(type: 'touchStart' | 'touchMove' | 'touchEnd', points: Array<Record<string, unknown>>) {
+    try {
+      await sendTouch(this.target.session, type, points, this.modifiers);
+    } catch (error) {
+      await cancelTouch(this.target.session, this.modifiers);
+      this.state.held = null;
+      throw error;
+    }
+  }
+
   private async dispatchAt(p: Point): Promise<void> {
     const session = this.target.session;
     const held = this.state.held;
     this.events++;
     if (this.input === 'touch') {
       // A finger cannot hover: with nothing down, a move only relocates it.
-      if (held) await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [this.touchPoint(p)], modifiers: this.modifiers });
+      if (held) await this.touch('touchMove', [this.touchPoint(p)]);
       return;
     }
     const drag = this.state.drag;
@@ -218,7 +230,7 @@ class Pointer {
   }
 
   /** Travel to `to` along a path, or jump there when there is nowhere to come from. */
-  async moveTo(to: Point, opts: { durationMs?: number; steps?: number; targetWidth?: number } = {}): Promise<{ steps: number; ms: number }> {
+  async moveTo(to: Point, opts: { durationMs?: number; steps?: number; targetWidth?: number; flick?: boolean } = {}): Promise<{ steps: number; ms: number }> {
     const from = this.state.at;
     to = round2(to);
     if (!from || (this.input === 'touch' && !this.held)) {
@@ -234,7 +246,7 @@ class Pointer {
     // stretch a 200ms flick to half a second. Touch moves are spaced to match.
     const steps = clamp(Math.round(opts.steps ?? ms / (this.input === 'touch' ? 45 : 16)), 1, 400);
     const path = this.human
-      ? humanPath(from, to, Math.max(steps, 3), this.rand, this.held ? 0.04 : 0.12, this.jitterPx)
+      ? humanPath(from, to, Math.max(steps, 3), this.rand, this.held ? 0.04 : 0.12, this.jitterPx, opts.flick === true)
       : linearPath(from, to, steps);
     const started = Date.now();
     for (const point of path) {
@@ -254,7 +266,7 @@ class Pointer {
     const session = this.target.session;
     this.events++;
     if (this.input === 'touch') {
-      await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [this.touchPoint(at)], modifiers: this.modifiers });
+      await this.touch('touchStart', [this.touchPoint(at)]);
       this.state.held = { input: 'touch', button: 'left' };
       return;
     }
@@ -291,7 +303,7 @@ class Pointer {
     this.events++;
     try {
       if (held.input === 'touch') {
-        await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], modifiers: this.modifiers });
+        await this.touch('touchEnd', []);
         return;
       }
       // dragIntercepted arrives asynchronously; give a drag begun by the last move a moment to show up.
@@ -406,6 +418,9 @@ async function locate(
     const point = { x: Number(loc.x), y: Number(loc.y) };
     return { point, width: 24, description: (await elementAt(instance, target, point)) ?? `point ${point.x},${point.y}`, notes: {} };
   }
+  if (loc.x !== undefined || loc.y !== undefined) {
+    throw new AgentBrowserError('incomplete_point', 'Provide both x and y for a viewport point.');
+  }
   return null;
 }
 
@@ -511,8 +526,8 @@ export async function drag(ctx: OpsContext, args: DragArgs): Promise<Record<stri
     );
   }
 
-  // Source first (it may scroll), then the destination, then re-measure the
-  // source in case bringing the destination into view scrolled it away.
+  // Reveal each endpoint at most once. Measure the source in the final
+  // viewport so resolving it again cannot scroll the destination away.
   let from: Located | null = continuing ? { point: state.at!, width: 24, description: 'the held pointer', notes: {} } : await locate(instance, target, args);
   const viewport = await viewportSize(target);
   if (!from && args.direction) {
@@ -536,18 +551,16 @@ export async function drag(ctx: OpsContext, args: DragArgs): Promise<Record<stri
   if (hasLocator(toLoc)) {
     to = (await locate(instance, target, toLoc))!;
     if (from.objectId) {
-      const again = await locate(instance, target, args);
-      if (again && Math.hypot(again.point.x - from.point.x, again.point.y - from.point.y) > 1) {
-        from = again;
-        const toAgain = await locate(instance, target, toLoc);
-        if (toAgain && Math.hypot(toAgain.point.x - to.point.x, toAgain.point.y - to.point.y) > 1) {
-          notes.push('The source and destination do not fit in the viewport together; the destination point may be off screen. A larger viewport or page.pointer with a wheel step mid-drag will help.');
-        }
-        if (toAgain) to = toAgain;
+      const box = await contentCenter(target.session, from.objectId, false);
+      from = { ...from, point: { x: box.x, y: box.y }, width: Math.min(box.width, box.height) };
+      if (box.x < 0 || box.x >= viewport.width || box.y < 0 || box.y >= viewport.height) {
+        throw new AgentBrowserError('source_offscreen', 'Revealing the drop target moved the source off screen. Use a larger viewport or a staged page.pointer gesture that scrolls while holding.');
       }
     }
   } else if (args.to_x !== undefined && args.to_y !== undefined) {
     to = { point: { x: args.to_x, y: args.to_y }, width: 24, description: `point ${args.to_x},${args.to_y}`, notes: {} };
+  } else if (args.to_x !== undefined || args.to_y !== undefined) {
+    throw new AgentBrowserError('incomplete_point', 'Provide both to_x and to_y for a viewport destination.');
   } else if (args.by_x !== undefined || args.by_y !== undefined) {
     to = { point: { x: from.point.x + (args.by_x ?? 0), y: from.point.y + (args.by_y ?? 0) }, width: 24, description: 'offset', notes: {} };
   } else if (args.direction) {
@@ -558,7 +571,13 @@ export async function drag(ctx: OpsContext, args: DragArgs): Promise<Record<stri
     throw new AgentBrowserError('missing_to', 'Say where the drag ends: to_selector/to_ref/to_text, to_x+to_y, by_x/by_y, or direction (+distance).');
   }
 
-  const end = { x: clamp(to.point.x, 1, viewport.width - 2), y: clamp(to.point.y, 1, viewport.height - 2) };
+  if (from.point.x < 0 || from.point.x >= viewport.width || from.point.y < 0 || from.point.y >= viewport.height) {
+    throw new AgentBrowserError('source_offscreen', 'The drag start is outside the viewport.');
+  }
+  const end = {
+    x: to.point.x >= 0 && to.point.x < viewport.width ? to.point.x : clamp(to.point.x, 0, viewport.width - 1),
+    y: to.point.y >= 0 && to.point.y < viewport.height ? to.point.y : clamp(to.point.y, 0, viewport.height - 1),
+  };
   const clamped = end.x !== to.point.x || end.y !== to.point.y;
   if (clamped) notes.push(`The end point ${Math.round(to.point.x)},${Math.round(to.point.y)} was outside the ${viewport.width}x${viewport.height} viewport and was pulled inside it.`);
 
@@ -584,7 +603,7 @@ export async function drag(ctx: OpsContext, args: DragArgs): Promise<Record<stri
   const swipe = Boolean(args.direction) && !hasLocator(toLoc) && args.to_x === undefined && args.by_x === undefined && args.by_y === undefined;
   const swipeMs = swipe ? clamp(140 + Math.hypot(end.x - from.point.x, end.y - from.point.y) * 0.4, 150, 500) : undefined;
   const held = await pointer.pause(args.hold_ms ?? humanPause(human, rand, swipe ? 15 : 70, swipe ? 50 : 180));
-  const travel = await pointer.moveTo(end, { durationMs: args.duration_ms ?? swipeMs, steps: args.steps, targetWidth: to.width });
+  const travel = await pointer.moveTo(end, { durationMs: args.duration_ms ?? swipeMs, steps: args.steps, targetWidth: to.width, flick: swipe });
   const settle = await pointer.pause(args.settle_ms ?? (swipe ? 0 : humanPause(human, rand, 60, 160)));
   const release = args.release !== false;
   if (release) await pointer.up();
@@ -739,22 +758,24 @@ export async function pinch(ctx: OpsContext, args: PinchArgs): Promise<Record<st
   const armed = verify ? await armMutationWatch(instance, target) : false;
   const session = target.session;
   const start = fingers(d0, a0, 0);
-  // Two fingers rarely land on the same frame.
-  await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start[0]], modifiers });
-  if (human) await delay(humanPause(true, rand, 12, 40));
-  await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: start, modifiers });
-  const started = Date.now();
+  let started: number;
   try {
+    await sendTouch(session, 'touchStart', [start[0]!], modifiers);
+    if (human) await delay(humanPause(true, rand, 12, 40));
+    await sendTouch(session, 'touchStart', start, modifiers);
+    started = Date.now();
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
       const s = human ? minJerk(t) : t;
       const wait = started + t * ms - Date.now();
       if (wait > 0) await delay(wait);
       const wobble = i === steps ? 0 : jitter * Math.sin(Math.PI * t);
-      await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: fingers(d0 + (d1 - d0) * s, a0 + (a1 - a0) * s, wobble), modifiers });
+      await sendTouch(session, 'touchMove', fingers(d0 + (d1 - d0) * s, a0 + (a1 - a0) * s, wobble), modifiers);
     }
-  } finally {
-    await session.trySend('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], modifiers });
+    await sendTouch(session, 'touchEnd', [], modifiers);
+  } catch (error) {
+    await cancelTouch(session, modifiers);
+    throw error;
   }
 
   return {

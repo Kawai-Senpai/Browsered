@@ -41,7 +41,6 @@ export const STEALTH_ARGS = [
  * 14.  screen.colorDepth/pixelDepth     -- 24 not 0 in headless
  * 15.  navigator.hardwareConcurrency    -- non-1 fallback
  * 16.  navigator.deviceMemory           -- non-undefined fallback
- * 17.  navigator.maxTouchPoints         -- 0 for desktop
  */
 const STEALTH_SCRIPT = `
 (() => {
@@ -296,14 +295,6 @@ const STEALTH_SCRIPT = `
     }
   } catch {}
 
-  // 17. navigator.maxTouchPoints - desktop is 0; some headless builds return
-  //     unexpected values that signal automation.
-  try {
-    Object.defineProperty(navigator, 'maxTouchPoints', {
-      get: () => 0,
-      configurable: true,
-    });
-  } catch {}
 })();
 `;
 

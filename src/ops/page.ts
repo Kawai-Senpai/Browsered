@@ -16,6 +16,7 @@ import {
   type ResolvedElement,
 } from './element.js';
 import { modifiersFromNames, parseChord, resolveKey } from './keys.js';
+import { cancelTouch, sendTouch } from './touch.js';
 
 export interface PageArgs extends ElementLocator {
   browser_id?: string;
@@ -480,7 +481,7 @@ export async function history(
  */
 const captureLocks = new Map<string, Promise<unknown>>();
 
-async function serializeCapture<T>(key: string, fn: () => Promise<T>): Promise<T> {
+export async function serializeCapture<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const previous = captureLocks.get(key) ?? Promise.resolve();
   const run = previous.catch(() => undefined).then(fn);
   captureLocks.set(
@@ -615,13 +616,11 @@ async function waitForFrames(
   }
 }
 
+type VisualViewport = { pageX: number; pageY: number; clientWidth: number; clientHeight: number; scale: number };
+
 /** The visible area in CSS pixels, and where it sits in the document (the scroll offset). */
-async function visualViewport(
-  session: CdpSession,
-): Promise<{ pageX: number; pageY: number; clientWidth: number; clientHeight: number }> {
-  const metrics = await session.send<{
-    cssVisualViewport: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
-  }>('Page.getLayoutMetrics');
+async function visualViewport(session: CdpSession): Promise<VisualViewport> {
+  const metrics = await session.send<{ cssVisualViewport: VisualViewport }>('Page.getLayoutMetrics');
   return metrics.cssVisualViewport;
 }
 
@@ -818,14 +817,98 @@ interface SheetArgs extends PageArgs {
   trigger_lazy_content?: boolean;
 }
 
+/** Annotate the captured pixels in an isolated tab so the page never sees the grid. */
+async function drawScreenshotGrid(
+  instance: BrowserInstance,
+  data: string,
+  format: 'png' | 'jpeg' | 'webp',
+  quality: number | undefined,
+  view: VisualViewport,
+  spacing: number,
+  timeoutMs: number,
+): Promise<{ data: string; x_label_spacing: number; y_label_spacing: number }> {
+  const { targetId } = await instance.browserSession.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', background: true });
+  try {
+    const scratch = await waitForTarget(instance, targetId, 10_000);
+    const { result, exceptionText } = await evaluate(instance, scratch, {
+      expression: `(async () => {
+        const { data, format, quality, width, height, spacing } = ${JSON.stringify({
+          data, format, quality, width: view.clientWidth, height: view.clientHeight, spacing,
+        })};
+        const image = new Image();
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = reject;
+          image.src = 'data:image/' + format + ';base64,' + data;
+        });
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const g = canvas.getContext('2d');
+        g.drawImage(image, 0, 0);
+        const sx = canvas.width / width;
+        const sy = canvas.height / height;
+        const unit = Math.max(1, Math.min(sx, sy));
+        g.beginPath();
+        for (let x = spacing; x < width; x += spacing) {
+          g.moveTo(x * sx, 0); g.lineTo(x * sx, canvas.height);
+        }
+        for (let y = spacing; y < height; y += spacing) {
+          g.moveTo(0, y * sy); g.lineTo(canvas.width, y * sy);
+        }
+        g.lineWidth = 2 * unit;
+        g.strokeStyle = 'rgba(0,0,0,.42)';
+        g.stroke();
+        g.lineWidth = unit;
+        g.strokeStyle = 'rgba(85,240,255,.78)';
+        g.stroke();
+        g.font = (12 * unit) + 'px monospace';
+        g.textBaseline = 'top';
+        g.lineJoin = 'round';
+        g.lineWidth = 3 * unit;
+        g.strokeStyle = '#101820';
+        g.fillStyle = '#e5fcff';
+        const label = (value, x, y) => {
+          g.strokeText(value, x, y);
+          g.fillText(value, x, y);
+        };
+        const labelWidth = g.measureText(String(Math.ceil(width))).width + 9 * unit;
+        const xStep = spacing * Math.max(1, Math.ceil(labelWidth / (spacing * sx)));
+        const yStep = spacing * Math.max(1, Math.ceil(20 * unit / (spacing * sy)));
+        label('0,0', 3 * unit, 3 * unit);
+        for (let x = xStep; x * sx + labelWidth < canvas.width; x += xStep) {
+          label(String(x), x * sx + 3 * unit, 3 * unit);
+        }
+        for (let y = yStep; y * sy + 16 * unit < canvas.height; y += yStep) {
+          label(String(y), 3 * unit, y * sy + 3 * unit);
+        }
+        const encoded = canvas.toDataURL('image/' + format, quality === undefined ? undefined : quality / 100);
+        if (!encoded.startsWith('data:image/' + format + ';base64,')) throw new Error('Could not encode the gridded screenshot');
+        return { data: encoded.split(',')[1], x_label_spacing: xStep, y_label_spacing: yStep };
+      })()`,
+      awaitPromise: true,
+      returnByValue: true,
+      timeoutMs,
+    });
+    if (!result.value) throw new AgentBrowserError('grid_render_failed', 'Could not annotate the viewport screenshot.', { reason: exceptionText });
+    return result.value as { data: string; x_label_spacing: number; y_label_spacing: number };
+  } finally {
+    await instance.browserSession.trySend('Target.closeTarget', { targetId });
+  }
+}
+
 export async function screenshot(
   ctx: OpsContext,
   args: SheetArgs & {
     mode?: 'viewport' | 'full_page' | 'element' | 'sheet';
     format?: 'png' | 'jpeg' | 'webp';
     highlight?: string;
+    grid?: { spacing?: number };
   },
 ): Promise<Record<string, unknown>> {
+  if (args.grid && args.mode && args.mode !== 'viewport') {
+    throw new AgentBrowserError('grid_requires_viewport', 'Coordinate grids require mode:"viewport" so the numbers match page input.');
+  }
   if (args.mode === 'sheet') return screenshotSheet(ctx, args);
   const { instance, target } = await pageOf(ctx, args);
   const mode = args.mode ?? 'viewport';
@@ -950,8 +1033,15 @@ export async function screenshot(
   }
 
   let data: string;
+  let gridView: VisualViewport | undefined;
   try {
     data = await serializeCapture(`${instance.id}:${target.handle}`, async () => {
+      if (args.grid) {
+        gridView = await visualViewport(target.session);
+        if (Math.abs(gridView.scale - 1) > 0.001) {
+          throw new AgentBrowserError('grid_requires_default_zoom', 'Reset pinch zoom before capturing an input coordinate grid.');
+        }
+      }
       const shot = await target.session.send<{ data: string }>('Page.captureScreenshot', params, timeout);
       return shot.data;
     });
@@ -983,6 +1073,21 @@ export async function screenshot(
       if (previous) await instance.browserSession.trySend('Target.activateTarget', { targetId: previous.cdpTargetId });
     }
   }
+  let grid: Record<string, unknown> | undefined;
+  if (gridView) {
+    const spacing = args.grid?.spacing ?? 80;
+    const annotated = await drawScreenshotGrid(instance, data, format, args.quality, gridView, spacing, timeout);
+    data = annotated.data;
+    grid = {
+      units: 'viewport_css_px',
+      origin: 'top_left',
+      spacing,
+      width: gridView.clientWidth,
+      height: gridView.clientHeight,
+      x_label_spacing: annotated.x_label_spacing,
+      y_label_spacing: annotated.y_label_spacing,
+    };
+  }
   const buffer = Buffer.from(data, 'base64');
   const mime = format === 'png' ? 'image/png' : format === 'jpeg' ? 'image/jpeg' : 'image/webp';
   // A caller-supplied label groups a run of screenshots into one investigation,
@@ -992,7 +1097,7 @@ export async function screenshot(
     label: args.label ?? `${mode}-${new URL(await currentUrl(instance, target), 'http://x').hostname || 'page'}`,
     mime,
     sourceRef: target.handle,
-    meta: { mode, url: target.info.url, ...(args.label ? { label: args.label } : {}) },
+    meta: { mode, url: target.info.url, ...(args.label ? { label: args.label } : {}), ...(grid ? { grid } : {}) },
   });
 
   const out: Record<string, unknown> = {
@@ -1003,6 +1108,7 @@ export async function screenshot(
     artifact: toArtifactRef(artifact),
     url: await currentUrl(instance, target),
     title: target.info.title,
+    ...(grid ? { grid } : {}),
     ...(scale === 1 ? {} : { scaled: Number(scale.toFixed(3)) }),
     ...(sweep ? { scrolled_through: true } : {}),
     ...(tallPage ? { hint: 'This page is tall, so it reads small as one image. mode:"sheet" lays it out in columns on one screen.' } : {}),
@@ -1499,6 +1605,7 @@ export async function click(
   args: PageArgs & {
     button?: 'left' | 'right' | 'middle';
     click_count?: number;
+    input?: 'auto' | 'mouse' | 'touch';
     modifiers?: string[];
     force?: boolean;
     verify?: boolean;
@@ -1513,6 +1620,9 @@ export async function click(
   const hasLocator =
     args.selector !== undefined || args.xpath !== undefined || args.text !== undefined ||
     args.ref !== undefined || args.backend_node_id !== undefined;
+  if (!hasLocator && (args.x === undefined) !== (args.y === undefined)) {
+    throw new AgentBrowserError('incomplete_point', 'Provide both x and y for a viewport click.');
+  }
   let element: ResolvedElement;
   let center: { x: number; y: number; revealedBy?: string };
   if (!hasLocator && args.x !== undefined && args.y !== undefined) {
@@ -1559,20 +1669,16 @@ export async function click(
     return out;
   };
 
-  // Under touch emulation a mouse event is not what the page listens for, so
-  // dispatch a real tap instead.
-  if (instance.touchTargets.has(target.handle)) {
+  // Use a touch contact automatically on emulated phones unless asked for mouse input.
+  if (args.input === 'touch' || (args.input !== 'mouse' && instance.touchTargets.has(target.handle))) {
     const touchPoint = { x: center.x, y: center.y, radiusX: 1, radiusY: 1, force: 1, id: 1 };
-    await target.session.send('Input.dispatchTouchEvent', {
-      type: 'touchStart',
-      touchPoints: [touchPoint],
-      modifiers,
-    });
-    await target.session.send('Input.dispatchTouchEvent', {
-      type: 'touchEnd',
-      touchPoints: [],
-      modifiers,
-    });
+    try {
+      await sendTouch(target.session, 'touchStart', [touchPoint], modifiers);
+      await sendTouch(target.session, 'touchEnd', [], modifiers);
+    } catch (error) {
+      await cancelTouch(target.session, modifiers);
+      throw error;
+    }
     return finish(
       'touch',
       await verifyClick(instance, target, element, armed, verifyMs, args.retry_if_unchanged === true),

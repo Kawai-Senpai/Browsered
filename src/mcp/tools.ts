@@ -18,6 +18,7 @@ import * as gestureOps from '../ops/gesture.js';
 import * as guideOps from '../ops/guide.js';
 import * as inspectorOps from '../ops/inspector.js';
 import * as jsOps from '../ops/js.js';
+import * as layerViewOps from '../ops/layer-view.js';
 import * as locatorOps from '../ops/locator.js';
 import * as networkOps from '../ops/network.js';
 import * as qaOps from '../ops/qa.js';
@@ -148,7 +149,7 @@ export function op<A>(
 export const TOOLS: ToolDef[] = [
   {
     name: 'attention.analyze',
-    description: 'Predict visual attention on a saved PNG screenshot with HotGaze. Returns focal points, optional region scores, and a heatmap overlay.',
+    description: 'Use for visual hierarchy, CTA prominence, or clutter reviews. Predict where attention goes on a clean PNG viewport screenshot with HotGaze. Returns focal points, optional region scores, and a heatmap overlay.',
     schema: {
       screenshot_id: z.string().describe('PNG artifact ID from page.screenshot. Use mode:viewport for a first-glance review.'),
       ...attentionModel,
@@ -432,6 +433,9 @@ export const TOOLS: ToolDef[] = [
       ...scope,
       ...locator,
       mode: z.enum(['viewport', 'full_page', 'element', 'sheet']).optional(),
+      grid: z.object({
+        spacing: z.number().int().min(16).max(1000).optional().describe('Distance between grid lines in viewport CSS pixels. Default 80. Smaller numbers make a denser grid.'),
+      }).optional().describe('Viewport only. Draw numbered x/y coordinates for page.click, page.drag, or page.pointer. Pass {} for default spacing.'),
       columns: z.number().optional().describe('mode:sheet. Columns to cut the page into, up to 12. Default: whatever fits aspect.'),
       aspect: z.union([z.string(), z.number()]).optional().describe('mode:sheet. Shape to fit, like "16:10" or "4:3". Default 16:10.'),
       width: z.number().optional().describe('mode:sheet. Lay the page out at this CSS width for the capture, then put the viewport back. Under 600 emulates a phone.'),
@@ -519,12 +523,13 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'page.click',
     description:
-      'Click an element, scrolling it into view first. By default watches for a DOM reaction and reports observed_change, so "the input was dispatched" is not mistaken for "the app handled it".',
+      'Click or tap viewport coordinates (x and y in CSS pixels), or use a locator to reveal and click an element. By default watches for a DOM reaction and reports observed_change, so "the input was dispatched" is not mistaken for "the app handled it".',
     schema: {
       ...scope,
       ...locator,
       button: z.enum(['left', 'right', 'middle']).optional(),
       click_count: z.number().optional(),
+      input: gestureMotion.input,
       modifiers: z.array(z.string()).optional().describe('e.g. ["Control", "Shift"].'),
       verify: z.boolean().optional().describe('Watch for DOM mutations after the click. Default true.'),
       verify_ms: z.number().optional().describe('How long to watch. Default 300.'),
@@ -1841,6 +1846,30 @@ export const TOOLS: ToolDef[] = [
     description: 'The element the human last picked, as a backend_node_id usable by every element-taking tool.',
     schema: { ...scope },
     handler: op(inspectorOps.picked),
+    readOnly: true,
+  },
+  {
+    name: 'inspector.layer_view',
+    description: 'Capture an exploded 3D-style page inspection as a PNG with numbered layer data and an optional interactive HTML viewer. Use z_index for overlays and stacking, dom for nesting, composited for Chromium render layers and paint replays.',
+    schema: {
+      ...scope,
+      mode: z.enum(['dom', 'z_index', 'composited']).optional().describe('Default z_index. Choose which kind of depth to visualize.'),
+      selector: z.string().optional().describe('CSS selector for the element to focus.'),
+      backend_node_id: z.number().int().positive().optional().describe('Highlight a node from inspector.element, inspector.picked, or another layer view.'),
+      point: z.object({ x: z.number().nonnegative(), y: z.number().nonnegative() }).optional().describe('Viewport CSS point to mark. Returns the browser hit-test stack from front to back.'),
+      radius: z.number().min(24).max(2000).optional().describe('Crop to this many CSS pixels around the point or focused element center.'),
+      angle: z.number().min(-180).max(180).optional().describe('Camera rotation in degrees. Default -24.'),
+      tilt: z.number().min(15).max(85).optional().describe('Camera elevation in degrees. Default 35.'),
+      explode: z.number().min(0).max(200).optional().describe('Gap between depth levels. Default 64. Set 0 to collapse.'),
+      max_layers: z.number().int().min(1).max(100).optional().describe('Max visible layers to draw and return. Default 16. Larger layers and the focus area are prioritized.'),
+      detail: z.enum(['overview', 'all']).optional().describe('Overview (default) reduces tiny decorations and redundant DOM wrappers. All keeps them eligible for display.'),
+      isolate: z.boolean().optional().describe('Draw only the layer matching selector or backend_node_id, above the original viewport.'),
+      paint: z.boolean().optional().describe('Composited mode only. Replay paint for up to eight drawable layers. Default true.'),
+      return_image: z.boolean().optional().describe('Return the PNG as an MCP image. Default true.'),
+      interactive: z.boolean().optional().describe('Store a standalone HTML viewer with rotate, tilt, explode, focus and animation controls. Default true.'),
+      save_path: z.string().optional().describe('Export the PNG to this path.'),
+    },
+    handler: op(layerViewOps.layerView),
     readOnly: true,
   },
   {
