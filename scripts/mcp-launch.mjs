@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { selectUpdate } from './mcp-update.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const ENTRY = join(ROOT, 'dist', 'cli.js');
@@ -31,7 +32,7 @@ function missingPackages() {
 function npm(args) {
   process.stderr.write(`[browserd] npm ${args.join(' ')}\n`);
   // shell: npm is npm.cmd on Windows. stdout is redirected to our stderr.
-  const result = spawnSync('npm', args, { cwd: ROOT, shell: true, stdio: ['ignore', 2, 2] });
+  const result = spawnSync('npm', args, { cwd: ROOT, shell: true, windowsHide: true, stdio: ['ignore', 2, 2] });
   if (result.status !== 0) {
     process.stderr.write(
       `[browserd] npm ${args.join(' ')} failed (exit ${result.status ?? result.signal}). ` +
@@ -41,16 +42,19 @@ function npm(args) {
   }
 }
 
-const missing = missingPackages();
-if (missing.length) {
-  process.stderr.write(`[browserd] missing packages (${missing.join(', ')}); installing\n`);
-  // install, not ci: ci deletes node_modules first and fails on a native
-  // module another running browserd still holds open.
-  npm(['install', '--no-audit', '--no-fund']);
-}
-if (missing.length || !existsSync(ENTRY)) {
-  process.stderr.write('[browserd] dist/cli.js is missing; building\n');
-  npm(['run', 'build']);
+const stagedEntry = selectUpdate(ROOT);
+if (!stagedEntry) {
+  const missing = missingPackages();
+  if (missing.length) {
+    process.stderr.write(`[browserd] missing packages (${missing.join(', ')}); installing\n`);
+    // install, not ci: ci deletes node_modules first and fails on a native
+    // module another running browserd still holds open.
+    npm(['install', '--no-audit', '--no-fund']);
+  }
+  if (missing.length || !existsSync(ENTRY)) {
+    process.stderr.write('[browserd] dist/cli.js is missing; building\n');
+    npm(['run', 'build']);
+  }
 }
 
-await import(pathToFileURL(ENTRY).href);
+await import(pathToFileURL(stagedEntry ?? ENTRY).href);

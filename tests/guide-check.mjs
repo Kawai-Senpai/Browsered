@@ -219,6 +219,7 @@ async function runSuite() {
       ['why is my element hidden', 'css.explain_visibility'],
       ['get back into a logged in session', 'storage.import'],
       ['loading placeholder skeleton', 'skeleton.capture'],
+      ['button visible but cannot click because another element covers it z-index overlapping overlay', 'inspector.layer_view'],
     ];
     for (const [query, expected] of cases) {
       const res = await call('guide.search', { query, limit: 5 });
@@ -236,6 +237,18 @@ async function runSuite() {
     const both = await call('guide.search', { query: 'cookies', limit: 20 });
     assert(both.matches > res.matches, 'the filter did not exclude anything');
     return `${res.matches} read-only of ${both.matches}`;
+  });
+
+  await check('symptom searches suggest a runnable tool call and honor filters', async () => {
+    const res = await call('guide.search', { query: 'mobile layout clips buttons and font sizes are inconsistent', limit: 3 });
+    assert(res.results[0]?.name === 'page.audit_layout', JSON.stringify(res.results));
+    assert(res.suggested_calls[0]?.args?.design === true, 'design audit arguments not suggested');
+    const readOnly = await call('guide.search', { query: 'mobile layout clips buttons', mutating: false });
+    assert(!readOnly.suggested_calls.some(call => call.tool === 'page.audit_layout'), 'filtered tool still suggested');
+    const orient = await call('guide.orient');
+    assert(orient.common_tasks.some(task => task.tool === 'page.audit_layout' && task.args?.design), 'missing task in guide.orient');
+    const balance = await call('guide.search', { query: 'visual balance right-heavy screen', limit: 3 });
+    assert(balance.results[0]?.name === 'attention.analyze' && balance.suggested_calls.some(call => call.args?.balance), 'visual balance call not suggested');
   });
 
   await check('the family filter restricts to that family', async () => {

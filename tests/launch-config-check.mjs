@@ -1,6 +1,7 @@
 /** Verify that config defaults and per-launch overrides reach Chromium itself. */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrowserInstance } from '../dist/browser/instance.js';
@@ -38,7 +39,7 @@ try {
   }
 } finally {
   stores.close();
-  rmSync(home, { recursive: true, force: true });
+  await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   if (previousHome === undefined) delete process.env.AGENTBROWSER_HOME;
   else process.env.AGENTBROWSER_HOME = previousHome;
 }

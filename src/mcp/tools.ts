@@ -3,6 +3,7 @@ import type { OpsContext, ToolRun } from '../ops/context.js';
 import * as artifactOps from '../ops/artifact.js';
 import * as appStateOps from '../ops/appstate.js';
 import * as attentionOps from '../ops/attention.js';
+import * as visualOps from '../ops/visual-review.js';
 import * as auditOps from '../ops/audit.js';
 import * as batchOps from '../ops/batch.js';
 import * as browserOps from '../ops/browser.js';
@@ -49,11 +50,38 @@ const targetId = {
   target_id: z.string().optional().describe('Target handle (tgt_*). Omit for the active page.'),
 };
 const scope = { ...browserId, ...targetId };
+const regionName = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
+const cssSelector = z.string().min(1).max(1000);
+const attentionTargets = z.array(z.union([
+  z.object({ name: regionName, selector: cssSelector }).strict(),
+  z.object({ name: regionName, text: z.string().trim().min(1).max(200) }).strict(),
+])).max(20).optional().describe('Named elements to score. Use a unique top-document CSS selector or exact visible control text or aria-label.');
+const designOptions = z.object({
+  allowed_font_sizes: z.array(z.number().positive().finite()).max(40).optional(),
+  allowed_button_heights: z.array(z.number().positive().finite()).max(40).optional(),
+  max_sizes_per_role: z.number().int().min(1).max(20).optional(),
+  geometry: z.union([z.boolean(), z.object({
+    alignment_tolerance_px: z.number().min(0).max(50).optional(),
+    spacing_tolerance_px: z.number().min(0).max(50).optional(),
+    scope: cssSelector.optional().describe('Compare only groups in this section.'),
+    ignore: cssSelector.optional().describe('Exclude intentionally staggered components.'),
+  })]).optional().describe('Check aligned edges and repeated spacing of flex/grid siblings.'),
+});
 const attentionModel = {
   backend: z.enum(['fast', 'deep']).optional().describe('Fast UI saliency heuristic (default) or pretrained UNISAL for image-heavy screens and second estimates. Deep dependencies and weights download automatically on first use with the default uv runner.'),
   faces: z.boolean().optional().describe('Enable the optional YuNet face-attention layer. Default false.'),
+  balance: z.union([z.boolean(), z.object({
+    region: z.object({
+      x: z.number().int().nonnegative(), y: z.number().int().nonnegative(),
+      width: z.number().int().min(4), height: z.number().int().min(4),
+    }).optional().describe('Area to measure in PNG pixels. Defaults to the whole image.'),
+    target_left: z.number().min(0).max(1).optional().describe('Expected fraction on the left. Default 0.5.'),
+    target_top: z.number().min(0).max(1).optional().describe('Expected fraction on top. Omit to report top/bottom without warning.'),
+    tolerance: z.number().min(0).max(0.5).optional().describe('Allowed difference from each target fraction. Default 0.15.'),
+  })]).optional().describe('Report visual balance, half and quadrant attention shares, and an approximate visual center.'),
+  use_attention_targets: z.boolean().optional().describe('Score named element bounds saved on the screenshot. Default true.'),
   regions: z.array(z.object({
-    name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    name: regionName,
     x: z.number().int().nonnegative(),
     y: z.number().int().nonnegative(),
     width: z.number().int().positive(),
@@ -148,8 +176,49 @@ export function op<A>(
 
 export const TOOLS: ToolDef[] = [
   {
+    name: 'visual.review',
+    description: 'Start here for visual QA after a UI change. Review the current page at phone and desktop widths with annotated screenshots, contrast, clipping, typography, alignment, spacing, predicted attention and optional baseline diffs.',
+    schema: {
+      ...scope,
+      widths: z.array(z.number().int().min(200).max(2400)).min(1).max(5).optional().describe('CSS viewport widths. Defaults to the approved baseline, or 320, 414 and 1280.'),
+      height: z.number().int().min(200).max(1800).optional().describe('CSS viewport height. Defaults to the approved baseline, or 800.'),
+      design: designOptions.optional(),
+      attention: z.union([z.boolean(), z.object({ backend: attentionModel.backend, balance: attentionModel.balance, faces: attentionModel.faces })]).optional().describe('Generate a heatmap and visual balance. Default runs on stable captures; set false for layout only.'),
+      attention_targets: attentionTargets,
+      mask_selectors: z.array(cssSelector).max(20).optional().describe('Exclude changing regions like timestamps from pixel diffs and stability checks. Omit to reuse baseline masks.'),
+      baseline: z.string().trim().min(1).max(120).optional().describe('Name of an approved baseline for this page and state.'),
+      threshold: z.number().min(0).max(1).optional().describe('Pixel difference threshold, default 0.1.'),
+      return_image: z.boolean().optional().describe('Include the first viewport PNG inline. The annotated HTML always includes every viewport.'),
+    },
+    handler: op(visualOps.review),
+  },
+  {
+    name: 'visual.approve_baseline',
+    description: 'Save a reviewed, stable visual.review result under a project and page-state name. Replace an existing baseline only by supplying its current report ID.',
+    schema: {
+      name: z.string().trim().min(1).max(120), report_id: z.string(), replace_report_id: z.string().optional(),
+    },
+    handler: op(visualOps.approveBaseline),
+  },
+  {
+    name: 'visual.list_baselines',
+    description: 'Find approved visual review baselines and their report IDs.',
+    schema: { limit: z.number().int().min(1).max(500).optional() },
+    handler: op(visualOps.listBaselines),
+    readOnly: true,
+  },
+  {
+    name: 'visual.inspect_target',
+    description: 'Diagnose a visible control you cannot click. Pass its CSS selector or viewport CSS point to see the nearby stacking contexts and which elements receive the hit.',
+    schema: {
+      ...scope, selector: cssSelector.optional(), point: z.object({ x: z.number().nonnegative(), y: z.number().nonnegative() }).optional(),
+    },
+    handler: op(visualOps.inspectTarget),
+    readOnly: true,
+  },
+  {
     name: 'attention.analyze',
-    description: 'Use for visual hierarchy, CTA prominence, or clutter reviews. Predict where attention goes on a clean PNG viewport screenshot with HotGaze. Returns focal points, optional region scores, and a heatmap overlay.',
+    description: 'Use for visual hierarchy, visual balance, CTA prominence, or clutter reviews. Predict attention on a clean PNG screenshot. Set balance:true for left/right weight, quadrants, and the estimated visual center.',
     schema: {
       screenshot_id: z.string().describe('PNG artifact ID from page.screenshot. Use mode:viewport for a first-glance review.'),
       ...attentionModel,
@@ -161,7 +230,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'attention.compare',
-    description: 'Compare predicted attention on two same-sized PNG screenshot artifacts. Regions apply to the same pixel coordinates in both screenshots.',
+    description: 'Compare predicted attention on two same-sized PNG screenshot artifacts. Named element targets are read from each capture, while manual regions use the same pixel coordinates in both.',
     schema: {
       baseline_id: z.string(),
       candidate_id: z.string(),
@@ -432,6 +501,7 @@ export const TOOLS: ToolDef[] = [
     schema: {
       ...scope,
       ...locator,
+      attention_targets: attentionTargets,
       mode: z.enum(['viewport', 'full_page', 'element', 'sheet']).optional(),
       grid: z.object({
         spacing: z.number().int().min(16).max(1000).optional().describe('Distance between grid lines in viewport CSS pixels. Default 80. Smaller numbers make a denser grid.'),
@@ -805,16 +875,17 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'page.audit_layout',
     description:
-      'Measure a page at several viewport widths and report what is actually broken: horizontal overflow (outermost offender only), touch targets under the minimum size, and clipped text. Answers responsive questions that a screenshot leaves to guesswork. Viewport emulation is always cleared afterwards.',
+      'Audit mobile overflow, clipped text or controls, and small touch targets across widths. Use design:true for invisible text or same-color contrast, too many font sizes, inconsistent button heights, and repeated decorative gradients. Projects can supply allowed font sizes and button heights.',
     schema: {
       ...scope,
       widths: z.array(z.number()).optional().describe('CSS widths to test. Default [320, 414, 768, 1280].'),
       height: z.number().optional().describe('Viewport height for every width. Default 800.'),
       urls: z.array(z.string()).optional().describe('Audit these URLs in turn. Omit to audit the current page.'),
       min_touch_target: z.number().optional().describe('Smallest acceptable interactive dimension in CSS px. Default 24.'),
+      design: z.union([z.boolean(), designOptions]).optional().describe('Enable design checks or pass project-specific typography, control sizes, and peer geometry rules.'),
       device_scale_factor: z.number().optional(),
     },
-    handler: op(auditOps.auditLayout),
+    handler: op((ctx, args: Parameters<typeof auditOps.auditLayout>[1]) => auditOps.auditLayout(ctx, args)),
   },
   {
     name: 'page.list_dialogs',
@@ -1850,7 +1921,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'inspector.layer_view',
-    description: 'Capture an exploded 3D-style page inspection as a PNG with numbered layer data and an optional interactive HTML viewer. Use z_index for overlays and stacking, dom for nesting, composited for Chromium render layers and paint replays.',
+    description: 'Use when a visible button is blocked, a menu is behind a header, or overlays overlap. The z_index view shows Chromium paint order and a front-to-back hit test at a point. Returns a numbered exploded PNG and optional HTML viewer. Use dom for nesting and composited for Chromium render layers and paint replays.',
     schema: {
       ...scope,
       mode: z.enum(['dom', 'z_index', 'composited']).optional().describe('Default z_index. Choose which kind of depth to visualize.'),

@@ -5,6 +5,7 @@
  *   node scripts/install-mcp.mjs                 # detect and patch every client found
  *   node scripts/install-mcp.mjs --client claude # just one
  *   node scripts/install-mcp.mjs --print         # print the JSON, change nothing
+ *   node scripts/install-mcp.mjs --auto-update  # opt in to staging updates for the next launch
  *   node scripts/install-mcp.mjs --http          # register the HTTP endpoint instead of stdio
  *
  * Config files are merged, never overwritten, and a .bak copy is written first.
@@ -85,6 +86,7 @@ function serverEntry() {
   }
   const env = {};
   if (flag('headless')) env.AGENTBROWSER_HEADLESS = '1';
+  if (flag('auto-update')) env.AGENTBROWSER_AUTO_UPDATE = '1';
   if (value('profile')) env.AGENTBROWSER_PROFILE = value('profile');
   return {
     command: process.execPath,

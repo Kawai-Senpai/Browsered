@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -15,7 +16,7 @@ const previousHome = process.env.AGENTBROWSER_HOME;
 process.env.AGENTBROWSER_HOME = home;
 
 const { BrowserRegistry } = await import('../dist/browser/registry.js');
-const { findProfileOwner, ProfileInUseError } = await import('../dist/browser/launcher.js');
+const { findProfileOwner, killBrowserProcess, ProfileInUseError } = await import('../dist/browser/launcher.js');
 const { DEFAULT_CONFIG } = await import('../dist/config.js');
 const { createStores } = await import('../dist/store/index.js');
 const { discover, withdraw } = await import('../dist/browser/discovery.js');
@@ -129,8 +130,7 @@ try {
   for (const child of opened) {
     if (child?.pid) {
       try {
-        if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-        else child.kill('SIGKILL');
+        await killBrowserProcess(child, child.pid);
       } catch {
         /* already gone */
       }
@@ -138,7 +138,7 @@ try {
   }
   await delay(800);
   stores.close();
-  rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   if (previousHome === undefined) delete process.env.AGENTBROWSER_HOME;
   else process.env.AGENTBROWSER_HOME = previousHome;
 }

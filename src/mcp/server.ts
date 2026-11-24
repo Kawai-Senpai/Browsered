@@ -86,20 +86,33 @@ function renderError(err: unknown): ToolResult {
 }
 
 export function createMcpServer(ctx: OpsContext): McpServer {
+  const requested = process.env.AGENTBROWSER_TOOL_FAMILIES?.split(',').map(name => name.trim()).filter(Boolean) ?? [];
+  const families = new Set(['guide', ...requested]);
+  const tools = requested.length ? TOOLS.filter(tool => families.has(tool.name.split('.')[0]!)) : TOOLS;
   const server = new McpServer(
     { name: 'browserd', version: '0.1.0' },
     {
       instructions:
-        'A continuously-recording Chromium with programmable DevTools.\n\n' +
+        requested.length
+          ? `This Browsered server exposes ${[...new Set(tools.map(tool => tool.name.split('.')[0]))].join(', ')}. ` +
+            'Use guide.search for the user’s task or symptom and guide.tool for examples. ' +
+            (families.has('visual') ? 'For frontend QA, use visual.review. For a visible control that cannot be clicked, use visual.inspect_target.' : '')
+          : 'A continuously-recording Chromium with programmable DevTools.\n\n' +
         'Network, console, exceptions and navigations are recorded the whole time, ' +
         'whether or not you asked for them, so queries about the past always work. ' +
         'A browser is launched automatically the first time a tool needs one.\n\n' +
         'New here? Call guide.orient once: it returns every tool family, what each ' +
         'is for, which tool fits the situations that come up most, and the techniques ' +
         'sessions habitually skip. One call beats discovering 200+ tools by trial.\n\n' +
+        'If you do not know which tool fits a symptom, use guide.search with the symptom and limit:5. ' +
+        'Follow a relevant suggested call instead of listing every tool. ' +
+        'For frontend visual QA after UI changes, run visual.review on the affected state for annotated phone and desktop captures. ' +
+        'It checks mobile overflow, clipped controls, low text contrast, typography drift, and inconsistent button heights. ' +
+        'Use the project design tokens as the size rules when available.\n\n' +
         'When reviewing visual hierarchy, CTA prominence, or clutter, use attention.analyze before drawing conclusions. ' +
         'Capture page.screenshot with {mode:"viewport",format:"png",return_image:false}, then pass artifact.artifact_id as screenshot_id. ' +
         'Use a clean screenshot without grid or highlight. Start with backend:"fast" and inspect the heatmap or focal points. ' +
+        'For visual balance or a lopsided layout, pass balance:true for attention shares and the estimated visual center. ' +
         'For a redesign or before/after review, use attention.compare with same-sized PNG captures. ' +
         'Report predicted attention alongside what you see on the page.\n\n' +
         'If a menu is behind a header or a visible control seems covered, use inspector.layer_view with mode:"z_index" for an exploded image and Chromium paint order. ' +
@@ -207,12 +220,12 @@ export function createMcpServer(ctx: OpsContext): McpServer {
 
   // guide.* documents the tools that are actually registered, so it reads the
   // same array rather than a copy that could drift from it.
-  setToolCatalog(TOOLS);
+  setToolCatalog(tools);
 
   // workflow.run replays saved steps through the same handlers a model calls,
   // so a replayed step behaves exactly like a direct call (validation included).
   setToolInvoker(async (name, args) => {
-    const tool = TOOLS.find((t) => t.name === name);
+    const tool = tools.find((t) => t.name === name);
     if (!tool) throw new AgentBrowserError('no_such_tool', `Workflow step names an unknown tool: ${name}.`);
     const parsed = z.object(tool.schema).passthrough().safeParse(args ?? {});
     if (!parsed.success) {
@@ -224,7 +237,7 @@ export function createMcpServer(ctx: OpsContext): McpServer {
     return tool.handler(ctx, parsed.data as Record<string, unknown>);
   });
 
-  for (const tool of TOOLS) {
+  for (const tool of tools) {
     server.registerTool(
       tool.name,
       {
@@ -261,7 +274,7 @@ export function createMcpServer(ctx: OpsContext): McpServer {
     );
   }
 
-  log.info(`registered ${TOOLS.length} tools`);
+  log.info(`registered ${tools.length} tools`);
   return server;
 }
 

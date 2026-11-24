@@ -7,7 +7,7 @@ const log = createLogger('store:db');
 
 export type Db = Database.Database;
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS browsers (
@@ -239,6 +239,12 @@ CREATE TABLE IF NOT EXISTS crawls (
   finished_at       INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_crawls_started ON crawls(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS visual_baselines (
+  name           TEXT PRIMARY KEY,
+  report_handle  TEXT NOT NULL,
+  approved_at    INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS document_matches (
   match_handle      TEXT PRIMARY KEY,

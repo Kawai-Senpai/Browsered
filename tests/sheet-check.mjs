@@ -1,6 +1,7 @@
 /** page.screenshot mode:sheet, on a real page with known bands of colour. */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -76,7 +77,7 @@ try {
 } finally {
   await registry.closeAll();
   stores.close();
-  rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   if (previousHome === undefined) delete process.env.AGENTBROWSER_HOME;
   else process.env.AGENTBROWSER_HOME = previousHome;
 }

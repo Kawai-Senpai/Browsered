@@ -1,6 +1,9 @@
+import type { CdpSession } from '../cdp/session.js';
 import { AgentBrowserError } from '../util/errors.js';
 import type { OpsContext } from './context.js';
 import { clearSensors } from './sensors.js';
+
+export const viewportOverrides = new WeakMap<CdpSession, Record<string, unknown>>();
 
 export interface EmulationArgs {
   browser_id?: string;
@@ -104,6 +107,7 @@ export async function setViewport(
     };
   }
   await target.session.send('Emulation.setDeviceMetricsOverride', metrics);
+  viewportOverrides.set(target.session, metrics);
 
   if (args.touch !== undefined) {
     // Touch emulation makes the page see a touch device (ontouchstart, hover
@@ -183,6 +187,7 @@ export async function resetDevice(ctx: OpsContext, args: EmulationArgs): Promise
   await target.session.trySend('Emulation.clearDeviceMetricsOverride');
   await target.session.trySend('Emulation.setTouchEmulationEnabled', { enabled: false });
   await target.session.trySend('Emulation.setUserAgentOverride', { userAgent: '' });
+  viewportOverrides.delete(target.session);
   instance.emulation.delete('device');
   instance.touchTargets.delete(target.handle);
   // ontouchstart is decided at document creation, so the flag alone does not
@@ -718,6 +723,7 @@ export async function resetAll(ctx: OpsContext, args: EmulationArgs): Promise<Re
     await run();
     cleared.push(name);
   }
+  viewportOverrides.delete(target.session);
   instance.emulation.clear();
 
   return {

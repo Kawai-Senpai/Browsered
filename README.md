@@ -322,6 +322,25 @@ DOM and stacking views show
 main-document bounding boxes. Compositor paint replay is limited to eight
 drawn layers and depends on Chromium's available snapshots.
 
+### Check a frontend before shipping
+
+Run the layout audit on each affected screen for horizontal overflow, clipped
+text and controls, undersized targets, low text contrast on simple backgrounds,
+and inconsistent typography or button heights.
+The audit also reports when a page lays out wider than the emulated phone
+and the browser scales it down to fit.
+
+```text
+page.audit_layout { "widths": [320, 414, 1280], "design": true }
+page.audit_layout { "design": { "allowed_font_sizes": [12, 14, 16, 20, 24, 32], "allowed_button_heights": [32, 40, 48] } }
+guide.search { "query": "mobile layout clips buttons and font sizes are inconsistent", "limit": 5 }
+```
+
+Use the project's real design tokens in place of the example values.
+Repeated gradients and a fragmented size scale are prompts for design review.
+Text on imagery, gradients, or unresolved backgrounds needs visual inspection.
+`guide.orient` also lists common tasks with tool names and suggested arguments.
+
 ### Things that will bite an agent
 
 | Symptom | Cause and fix |
@@ -788,6 +807,61 @@ the daemon home, and which Chromium was resolved and from where.
 
 ---
 
+## Optional background updates
+
+Register the MCP launcher with `npm run install-mcp -- --auto-update` or set
+`AGENTBROWSER_AUTO_UPDATE=1` in the environment of `scripts/mcp-launch.mjs`.
+On startup, the launcher checks the official Browsered `master` branch in the
+background. It builds and checks a fast-forward update in a separate directory.
+After it finishes, the next server launch uses that build. The running daemon,
+source checkout, and existing build are left in place.
+
+Only clean source checkouts pointing to the official HTTPS Git remote are
+eligible. The worker uses the committed lockfile, retains the last completed
+build when Git or npm fails, and records results in `updates/.../update.log`
+under the daemon home. Completed revisions are kept on disk. Set
+`AGENTBROWSER_AUTO_UPDATE=0` to start the local checkout again. For manually
+started HTTP servers, use the same launcher with `--http`.
+
+## Visual review and baselines
+
+Use `visual.review` on the current page after a UI change. It runs the layout
+and design audit at 320, 414, and 1280 CSS px by default and returns an HTML
+report with annotated captures, attention overlays, and a JSON evidence artifact.
+
+```text
+visual.review {
+  "baseline": "shop/checkout-empty",
+  "widths": [320, 1280],
+  "attention_targets": [{"name": "checkout", "text": "Checkout"}],
+  "mask_selectors": [".live-clock"],
+  "design": {"geometry": {"scope": "main", "alignment_tolerance_px": 3, "spacing_tolerance_px": 4}}
+}
+visual.approve_baseline {"name": "shop/checkout-empty", "report_id": "art_..."}
+visual.review {"baseline": "shop/checkout-empty"}
+```
+
+Open the first call's `report_view` and pass its `report_data.artifact_id`
+to approve it. Later calls inherit the widths, design rules, attention targets,
+and masks. Use the same URL, page state, color preference, and scroll position.
+To replace a baseline, include its current report ID as `replace_report_id`.
+List saved names with `visual.list_baselines`.
+
+The review looks for two matching consecutive captures within four attempts.
+Changing regions matched by mask selectors are excluded from pixel comparisons.
+An unstable capture remains inspectable and cannot be approved. Pixel differences
+and audit changes are reported per viewport. Use `attention:false` for a layout-only
+review. Alignment and gap checks compare related flex/grid siblings. Use
+`geometry.ignore` to exclude components with intentional offsets or uneven spacing.
+
+If a control is visible but receives no clicks, run `visual.inspect_target`
+with its selector or a CSS point from `page.screenshot` with `grid:{}`.
+It returns a focused stacking view and the elements at that point in hit order.
+`guide.search` routes phrases such as "visual QA" and "cannot click this checkbox"
+to the corresponding tool. To reduce the tools exposed to an MCP client, set
+`AGENTBROWSER_TOOL_FAMILIES=browser,page,visual,attention,artifact` in its server
+environment. The guide is always available, and an unset value exposes all families.
+
 ## Visual attention and UI hierarchy
 
 Browsered uses [HotGaze](https://github.com/suryakosaraju/hotgaze) to predict which
@@ -803,12 +877,37 @@ weights already cached. Screenshot analysis runs locally.
 1. Capture the loaded state with `page.screenshot { "mode": "viewport", "format": "png", "return_image": false }`. Save the returned artifact ID.
 2. Call `attention.analyze` with that ID as `screenshot_id`. It returns focal points, scores for any named rectangles, and a PNG overlay. Use `overlay:false` for scores only.
 3. Inspect strong hotspots on secondary controls, decoration, or competing actions. Check the intended task, text legibility and spacing, and use `page.audit_layout` for overflow and responsive geometry. The heatmap is a model prediction of saliency. Treat usability and accessibility as separate checks.
-4. Capture the revised state at the same viewport, scroll position and device scale. Call `attention.compare` with `baseline_id` and `candidate_id` to see spatial and region-share changes. Regions use PNG pixels and stay at the same coordinates in both variants. If the CTA moved or resized, score it separately in each capture with its new bounds.
+4. Capture the revised state at the same viewport, scroll position and device scale. Call `attention.compare` with `baseline_id` and `candidate_id` to see spatial and region-share changes. Regions use PNG pixels and stay at the same coordinates in both variants. To track a moving CTA automatically, pass the same `attention_targets` to both `page.screenshot` calls. Use a unique top-document CSS selector or exact visible control text or aria-label. Browsered captures element bounds with each screenshot and reports missing, ambiguous, or offscreen targets. `attention.compare` reports each target's predicted attention share, density, and share change.
 
 For image-heavy screens or an ambiguous fast result, rerun the same artifact
 with `attention.analyze { "screenshot_id": "art_...", "backend": "deep" }`.
 `attention.compare` also accepts `backend:"deep"` and uses it for both variants.
+
+Set `balance:true` on `attention.analyze` or `attention.compare` to measure
+left/right and top/bottom attention shares, quadrants, and an estimated
+attention center. Use `balance.region` to measure only a hero or panel, and
+`target_left`, `target_top`, and `tolerance` to represent deliberate asymmetry.
+Defaults review horizontal shares outside 35–65%. Vertical shares are measured
+without a warning until a vertical target is set. These are model estimates.
+When the overlay is enabled, `attention.analyze` also returns a `balance_view`
+HTML artifact with the screenshot, crosshair, estimated center, and percentages.
 Use `guide.tool { "name": "attention.analyze" }` for the argument schema and examples.
+
+To evaluate the production attention model against observed gaze, use the
+[UEyes test split](https://zenodo.org/records/8010312). The preparation script
+fetches selected archive entries by byte range or accepts a local ZIP with
+`--archive`. It converts the selected screenshots and binary fixation maps to PNG.
+
+```sh
+npm run build
+uv run scripts/prepare-ueyes.py /path/to/ueyes-sample --download-sample --sample-per-category 8
+node scripts/benchmark-attention.mjs /path/to/ueyes-sample/manifest.json --backend fast
+```
+
+The benchmark reports grid-resolution AUC and NSS for both the production
+predictions and a fixed center prior, with results for web and mobile separately.
+A small sample is suitable for checking the harness. Use a larger sample for
+comparisons that will inform model changes.
 
 ## Skeleton screens measured from the real UI
 

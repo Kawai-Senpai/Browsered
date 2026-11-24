@@ -174,6 +174,7 @@ const FAMILY_NOTES: Record<string, string> = {
     'Real breakpoints, not logging. The pause is genuine: the page is stopped, and you must resume it or the tab stays frozen for the human too.',
   inspector:
     'inspector.pick hands element selection to the human in the browser window, which is the fastest way to resolve "this button here" when a selector is hard to describe.',
+  visual: 'Use visual.review for an annotated phone and desktop review. Approve a stable report as a baseline to see what changed. Use visual.inspect_target when a visible control is covered.',
   time: 'time.run advances the clock and fires every timer that comes due, so a 60-second interval fires 30 times under a 30-minute run. time.jump leaps forward firing each timer once, which is the "closed the laptop for three hours" case. They find different bugs.',
   fault:
     'Dry-run every pattern with fault.test before injecting. `**` spans the host, so a pattern meant for the API routinely takes out the frontend route as well and the page never loads.',
@@ -364,13 +365,25 @@ const TOOL_NOTES: Record<string, ToolNote> = {
     caveats: ['When it recreates, the result carries a NEW target_id; the old one is gone.'],
     see_also: ['page.visit_batch', 'page.close_tab'],
   },
+  'inspector.layer_view': {
+    when: 'A visible button cannot be clicked because another element covers it, a menu or modal appears behind a header, or you need to debug overlapping overlays, z-index, and stacking order.',
+    how: 'Use mode:"z_index" for browser paint order. Pass point:{x,y} from the live viewport and radius to see the overlap at that point and get the front-to-back hit-test stack. Use mode:"dom" for nesting or mode:"composited" for rendering layers and paint replays.',
+    caveats: [
+      'Use the layer numbers to find matching backend node IDs and inspect the elements in inspector.element.',
+      'Coordinates on the exploded image differ from live viewport coordinates. Use the reference screenshot or page.screenshot with a coordinate grid when you need x and y.',
+    ],
+    examples: ['inspector.layer_view { "mode":"z_index", "point":{"x":200,"y":150}, "radius":120 }'],
+    see_also: ['inspector.element', 'css.explain_visibility', 'page.screenshot'],
+  },
   'page.audit_layout': {
-    when: 'Responsive questions. "Does this break on mobile" is measurable, not a matter of opinion about a screenshot.',
-    how: 'Emulates each width in turn and probes the page for horizontal overflow, undersized touch targets and clipped text. Overflow is collapsed to the outermost offender, because a 600px table otherwise reports itself plus every descendant.',
+    when: 'Review a frontend for mobile overflow, clipped buttons or text, unreadable same-color text, too many font sizes, and inconsistent button heights.',
+    how: 'Emulates each width and reports outermost overflow, small targets, and clipped text. Pass design:true for contrast, typography, clipped controls, and style consistency. Supply design token sizes to check the project rules.',
     caveats: [
       'position: fixed elements are skipped on purpose: a sticky header legitimately spans the viewport.',
       'Viewport emulation is always cleared afterwards, even if a probe throws.',
+      'Contrast checks resolve simple backgrounds. Typography, button peer sizes, and repeated gradients are review signals.',
     ],
+    examples: ['page.audit_layout { "design":true, "widths":[320,414,1280] }'],
     see_also: ['skeleton.capture', 'device.preset'],
   },
   'network.summarize': {
@@ -427,6 +440,18 @@ const TOOL_NOTES: Record<string, ToolNote> = {
       'Unsupplied variables fall back to WORKFLOW_VAR_<NAME> in the environment, which keeps credentials out of the saved file.',
       'A run that dispatched every action but changed nothing is reported as a failure. That is deliberate: a false green is worse than no replay at all.',
     ],
+  },
+  'visual.review': {
+    when: 'After a UI change, to review mobile clipping, alignment, consistency, and predicted attention together.',
+    how: 'Run on the current page state. Open report_view for annotated viewports and use report_data to approve a baseline.',
+    examples: ['visual.review { "widths":[320,1280], "baseline":"checkout/empty" }'],
+    see_also: ['visual.approve_baseline', 'page.audit_layout', 'attention.analyze'],
+  },
+  'visual.inspect_target': {
+    when: 'A button, link, or checkbox is visible but a click or tap misses it.',
+    how: 'Use a unique selector or read a point from a gridded viewport screenshot. Inspect the front-to-back hit list and focused stacking-context view.',
+    examples: ['visual.inspect_target { "point": { "x":120, "y":80 } }'],
+    see_also: ['page.screenshot', 'inspector.layer_view'],
   },
   'attention.analyze': {
     when: 'Checking what may draw the eye first, whether the primary action is easy to spot, or which parts of a UI compete for attention.',
@@ -677,7 +702,7 @@ AGENTBROWSER_HOME environment variable):
 
 Updating
 
-  cd ${pkgRoot}
+  cd <your original Browsered checkout>
   git pull
   npm install
   npm run build
@@ -687,6 +712,12 @@ Then restart the MCP client, or reconnect the server: your client is holding a
 stdio process or an HTTP session against the OLD build, and a rebuild does not
 reach into it. A tool that "does not exist" right after an update is almost
 always a client that has not reconnected.
+
+For optional background updates, register the stdio launcher using
+npm run install-mcp -- --auto-update. The launcher checks the official master
+branch from a clean checkout, builds an update in the daemon cache, and uses
+the completed build on a later server start. Set AGENTBROWSER_AUTO_UPDATE to 0
+in the client configuration to start the original checkout again.
 
 Registering with a client
 
@@ -1072,6 +1103,7 @@ export async function guideOrient(
     what_this_is:
       'A Chromium that records itself continuously - every request, console entry, exception and navigation - exposed over MCP with programmable DevTools. Recording is armed before the first page script runs, so questions about the past always work, including about a browser that has since closed. A browser launches automatically the first time any tool needs one.',
     tool_count: tools.length,
+    common_tasks: TASK_ROUTES.filter(route => tools.some(tool => tool.name === route.tool)).map(({ task, tool, args: input }) => ({ task, tool, ...(input ? { args: input } : {}) })),
     start_here: [
       'browser.status - where am I, what is loaded, did it actually commit, and is this a secure context. The cheapest orientation call in the server; run it before debugging anything you see.',
       'page.snapshot - what is on screen, with refs to act on. Cheaper and more reliable than a screenshot.',
@@ -1084,6 +1116,8 @@ export async function guideOrient(
       'The console is empty but something is broken: app.error_state. Frameworks catch their own errors and store them as state, where console.exceptions structurally cannot see them.',
       'Works locally, fails deployed: check browser.status secure_context first. Plain http:// withholds crypto.randomUUID, clipboard and service workers that localhost provides.',
       'Why can I not see this element: css.explain_visibility names the rule that hid it.',
+      'A visible control is covered or a menu is behind another layer: visual.inspect_target takes its selector or viewport point and shows what is in front.',
+      'Reviewing a UI change: visual.review captures the layout audit and visual evidence together. Use attention.analyze for predicted hierarchy on a single PNG.',
       'Is the app reaching its API: network.probe asks from inside the page, so it sees CORS, service workers and the real origin. curl cannot.',
       'Large payloads become artifacts: read them with artifact.search / artifact.read_lines / artifact.json_query rather than pulling them into context.',
       'Camera, microphone or screen sharing (getUserMedia / getDisplayMedia, proctoring, video calls): launch with browser.launch{media:{camera:true, microphone:true, fake_devices:true, screen:true}}. The permission bubble and the screen picker are browser UI no click can reach. guide.topic("media").',
@@ -1223,6 +1257,42 @@ export async function guideList(
 
 /* --------------------------------- search --------------------------------- */
 
+const TASK_ROUTES = [
+  {
+    task: 'Review the current page on phone and desktop', tool: 'visual.review', args: { widths: [320, 414, 1280] },
+    symptom: /visual (?:qa|review|regression|baseline)|review.{0,22}layout|spacing|alignment|screenshot diff|compare.{0,24}before.{0,8}after/,
+  },
+  {
+    task: 'Check what receives the click at a visible control', tool: 'visual.inspect_target',
+    symptom: /can.t click|cannot click|unable to click|click.{0,15}(?:miss|intercept)|(?:button|checkbox|link).{0,20}unclickable/,
+    needs: 'Pass the control selector or a CSS point from a gridded viewport screenshot.',
+  },
+  {
+    task: 'Review responsive layout and design consistency', tool: 'page.audit_layout', args: { design: true },
+    symptom: /design audit|contrast|same[- ]colou?r|font sizes?|typography|inconsistent button|clipp(?:ed|ing)|horizontal overflow|layout.{0,20}mobile|mobile.{0,20}layout/,
+  },
+  {
+    task: 'Find which overlay covers a visible control', tool: 'inspector.layer_view', args: { mode: 'z_index' },
+    symptom: /z[- ]index|stacking order|stacking contexts?|paint order|behind (?:another|a header)|(?:covers?|covered by|blocked by).{0,25}(?:element|overlay|button|header|control)|(?:element|overlay|header).{0,25}(?:covers?|blocking)/,
+  },
+  {
+    task: 'Review visual hierarchy or where the eye goes first', tool: 'attention.analyze',
+    symptom: /visual hierarchy|gaze|heatmap|cta prominence|eye goes|what stands out/,
+  },
+  {
+    task: 'Measure visual balance and see whether a screen feels lopsided', tool: 'attention.analyze', args: { balance: true },
+    symptom: /visual balance|imbalanc|lopsided|left[- ]heavy|right[- ]heavy|top[- ]heavy|visual weight/,
+  },
+  {
+    task: 'Diagnose a click that triggers no visible response', tool: 'app.diagnose_interaction',
+    symptom: /(?:click|tap).{0,22}(?:did nothing|does nothing|no response|no effect)/,
+  },
+  {
+    task: 'Measure a loading placeholder across widths', tool: 'skeleton.capture',
+    symptom: /loading placeholder|skeleton screen/,
+  },
+];
+
 interface Hit {
   kind: 'tool' | 'topic';
   name: string;
@@ -1258,7 +1328,8 @@ export async function guideSearch(
   },
 ): Promise<Record<string, unknown>> {
   const tools = requireCatalog();
-  const terms = args.query.toLowerCase().split(/[^a-z0-9_.]+/).filter((t) => t.length > 1);
+  const query = args.query.trim().toLowerCase();
+  const terms = [...new Set(query.split(/[^a-z0-9_.]+/).filter((t) => t.length > 1))];
   if (terms.length === 0) {
     throw new AgentBrowserError('empty_query', 'Give guide.search something to look for, in plain words.');
   }
@@ -1292,6 +1363,14 @@ export async function guideSearch(
       add(noteText, 2, 'notes');
       add(FAMILY_NOTES[family] ?? '', 1, 'family notes');
       add(argText, 1, 'arguments');
+      if (tool.name === query) {
+        score += 250;
+        matched.push('exact tool name');
+      }
+      if (TASK_ROUTES.some(route => route.tool === tool.name && route.symptom.test(query))) {
+        score += 85;
+        matched.push('task match');
+      }
       if (score === 0) continue;
 
       hits.push({
@@ -1343,6 +1422,11 @@ export async function guideSearch(
           return { ...hit, ...toolDoc(tool) };
         })
       : page,
+    ...(sort === 'relevance' ? {
+      suggested_calls: TASK_ROUTES.filter(route =>
+        route.symptom.test(query) && page.some(hit => hit.kind === 'tool' && hit.name === route.tool),
+      ).map(({ task, tool, args: input, needs }) => ({ task, tool, ...(input ? { args: input } : {}), ...(needs ? { needs } : {}) })),
+    } : {}),
     hint:
       page.length === 0
         ? 'Nothing matched. Try fewer or plainer words, or guide.list to browse the families.'

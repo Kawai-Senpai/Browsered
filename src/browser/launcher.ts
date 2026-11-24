@@ -518,7 +518,7 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, ...(options.env ?? {}) },
-    windowsHide: false,
+    windowsHide: options.headless === true,
   });
 
   child.stderr?.on('data', (chunk: Buffer) => {
@@ -557,7 +557,7 @@ export async function killBrowserProcess(child: ChildProcess, pid: number): Prom
   if (child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === 'win32') {
     await new Promise<void>((resolve) => {
-      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
       killer.once('exit', () => resolve());
       killer.once('error', () => resolve());
     });

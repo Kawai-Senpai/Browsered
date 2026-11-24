@@ -398,6 +398,58 @@ async function main() {
     return `${w.value}px`;
   });
 
+  await check('design audit detects contrast, font drift, clipping, and inconsistent buttons', async () => {
+    await call('js.evaluate', { expression: `(() => {
+      const fixture = document.createElement('section');
+      fixture.id = 'design-audit-fixture';
+      fixture.style.background = 'white';
+      fixture.innerHTML = '<p id="same-color" style="color:white">Invisible text</p>' +
+        '<p id="alpha-color" style="color:rgba(255,255,255,.5);background:rgba(0,0,0,.1)">Low alpha contrast</p>' +
+        '<p id="healthy-color" style="color:#111">Readable text</p>' +
+        [13,15,17,19,21].map(size => '<p style="font-size:'+size+'px">Text token '+size+'</p>').join('') +
+        '<div style="display:flex;align-items:center"><button id="short-button" style="height:28px">Cancel</button>' +
+        '<button id="tall-button" style="height:44px">Save changes</button></div>' +
+        '<div id="clip-box" style="overflow:hidden;width:80px"><button id="clipped-button" style="width:135px">Clipped</button></div>' +
+        '<div id="clip-text" style="overflow:hidden;height:6px"><span>Vertically clipped text</span></div>' +
+        '<div id="ellipsis" style="overflow:hidden;width:80px;white-space:nowrap;text-overflow:ellipsis">Intentional ellipsis</div>' +
+        '<button id="icon-only-label" style="color:white;text-indent:-5000px;overflow:hidden;width:50px">Accessible icon label</button>' +
+        '<div style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0)"><span id="sr-only-label" style="color:white">Accessible status</span></div>' +
+        '<p id="gradient-text" style="background:linear-gradient(black,white)">Review visually</p>' +
+        Array.from({length:6},()=>'<div style="width:120px;height:50px;background:linear-gradient(red,blue)"></div>').join('');
+      document.body.append(fixture);
+    })()` });
+    try {
+      const result = await call('page.audit_layout', {
+        widths: [320, 1280],
+        design: { allowed_font_sizes: [16, 24], allowed_button_heights: [44] },
+      });
+      const { design, horizontal_scroll } = result.results[0].widths['320'];
+      const contrast = design.findings.low_text_contrast;
+      must(contrast.some(row => row.selector === '#same-color' && row.ratio === 1), JSON.stringify(contrast));
+      must(contrast.some(row => row.selector === '#alpha-color') && !contrast.some(row => ['#healthy-color', '#gradient-text', '#icon-only-label', '#sr-only-label'].includes(row.selector)), JSON.stringify(contrast));
+      must(design.coverage.contrast_background_unresolved > 0, 'gradient text should require visual review');
+      must(design.findings.fragmented_typography.some(row => row.role === 'body'), 'font drift was missed');
+      must(design.counts.off_scale_font_size > 0, 'font size rules were ignored');
+      must(design.findings.inconsistent_button_heights.some(row => row.buttons.some(button => button.selector === '#short-button')), 'peer button mismatch was missed');
+      must(design.findings.off_scale_button_height.some(row => row.selector === '#short-button'), 'button height rules were ignored');
+      must(design.findings.clipped_control.some(row => row.selector === '#clipped-button' && row.clipped_by === '#clip-box'), 'clipped button was missed');
+      const clippedText = design.findings.clipped_text_content;
+      must(clippedText.some(row => row.clipped_by === '#clip-text') && !clippedText.some(row => ['#ellipsis', '#icon-only-label'].includes(row.clipped_by)), JSON.stringify(clippedText));
+      must(design.counts.repeated_gradient_surfaces === 1 && horizontal_scroll, 'style review or responsive overflow was missed');
+      const viewport = await call('js.evaluate', { expression: "document.querySelector('meta[name=viewport]').content" });
+      try {
+        await call('js.evaluate', { expression: "document.querySelector('meta[name=viewport]').content='width=1120'" });
+        const fixed = await call('page.audit_layout', { widths: [320], design: true });
+        const issue = fixed.results[0].widths['320'].design.findings.mobile_layout_wider_than_device[0];
+        must(issue.requested_width === 320 && issue.layout_width === 1120, JSON.stringify(issue));
+      } finally {
+        await call('js.evaluate', { expression: `document.querySelector('meta[name=viewport]').content=${JSON.stringify(viewport.value)}` });
+      }
+    } finally {
+      await call('js.evaluate', { expression: "document.getElementById('design-audit-fixture').remove()" });
+    }
+  });
+
   /* --------------------------------------------------------- device preset --- */
   await check('device.preset has a 320px phone-small profile', async () => {
     const r = await call('device.preset', { preset: 'phone-small' });
@@ -439,7 +491,7 @@ async function main() {
   });
 
   await check('network.summarize can exclude domains', async () => {
-    const r = await call('network.summarize', { group_by: 'domain', exclude_domains: ['127.0.0.1'] });
+    const r = await call('network.summarize', { group_by: 'domain', url_contains: fixture.base, exclude_domains: ['127.0.0.1'] });
     must(r.excluded && r.excluded.by_domain > 0, `nothing excluded: ${JSON.stringify(r)}`);
     // Excluding the only host empties the result, and that has to say why.
     must(r.explanation.includes('exclude_domains'), `explanation did not mention it: ${r.explanation}`);

@@ -17,6 +17,8 @@ import {
 } from './element.js';
 import { modifiersFromNames, parseChord, resolveKey } from './keys.js';
 import { cancelTouch, sendTouch } from './touch.js';
+import { measureCaptureRegions, regionsInPng, type AttentionTarget } from './screenshot-regions.js';
+import { viewportOverrides } from './emulation.js';
 
 export interface PageArgs extends ElementLocator {
   browser_id?: string;
@@ -518,7 +520,7 @@ const RUNNING_ANIMATIONS_FN = `(() => {
   return n;
 })()`;
 
-async function settleAnimations(
+export async function settleAnimations(
   instance: BrowserInstance,
   target: ManagedTarget,
   timeoutMs: number,
@@ -904,8 +906,22 @@ export async function screenshot(
     format?: 'png' | 'jpeg' | 'webp';
     highlight?: string;
     grid?: { spacing?: number };
+    attention_targets?: AttentionTarget[];
+    mask_selectors?: string[];
+    evidence_selectors?: string[];
+    measure_regions?: boolean;
   },
 ): Promise<Record<string, unknown>> {
+  const goals = args.attention_targets ?? [];
+  const masks = args.mask_selectors ?? [];
+  const evidence = args.evidence_selectors ?? [];
+  const trackRegions = args.measure_regions || goals.length > 0 || masks.length > 0 || evidence.length > 0;
+  if (trackRegions && ((args.mode && args.mode !== 'viewport') || (args.format && args.format !== 'png') || args.grid || args.highlight || args.max_width)) {
+    throw new AgentBrowserError('screenshot_regions_require_viewport', 'Screenshot regions require a clean, unscaled viewport PNG.');
+  }
+  if (new Set(goals.map(goal => goal.name)).size !== goals.length) {
+    throw new AgentBrowserError('duplicate_attention_targets', 'Give each attention target a unique name.');
+  }
   if (args.grid && args.mode && args.mode !== 'viewport') {
     throw new AgentBrowserError('grid_requires_viewport', 'Coordinate grids require mode:"viewport" so the numbers match page input.');
   }
@@ -1034,6 +1050,8 @@ export async function screenshot(
 
   let data: string;
   let gridView: VisualViewport | undefined;
+  let geometry: Awaited<ReturnType<typeof measureCaptureRegions>> | undefined;
+  let moved = false;
   try {
     data = await serializeCapture(`${instance.id}:${target.handle}`, async () => {
       if (args.grid) {
@@ -1042,7 +1060,12 @@ export async function screenshot(
           throw new AgentBrowserError('grid_requires_default_zoom', 'Reset pinch zoom before capturing an input coordinate grid.');
         }
       }
+      if (trackRegions) geometry = await measureCaptureRegions(instance, target, goals, masks, evidence);
       const shot = await target.session.send<{ data: string }>('Page.captureScreenshot', params, timeout);
+      if (geometry) {
+        const after = await measureCaptureRegions(instance, target, goals, masks, evidence);
+        moved = JSON.stringify(geometry) !== JSON.stringify(after);
+      }
       return shot.data;
     });
   } catch (error) {
@@ -1089,6 +1112,11 @@ export async function screenshot(
     };
   }
   const buffer = Buffer.from(data, 'base64');
+  const regions = geometry ? regionsInPng(geometry, buffer) : undefined;
+  if (moved && regions) {
+    regions.goals = regions.goals.map(goal => ({ name: goal.name, status: 'moving' }));
+    regions.evidence = [];
+  }
   const mime = format === 'png' ? 'image/png' : format === 'jpeg' ? 'image/jpeg' : 'image/webp';
   // A caller-supplied label groups a run of screenshots into one investigation,
   // which is how artifact.list is filtered afterwards.
@@ -1097,7 +1125,7 @@ export async function screenshot(
     label: args.label ?? `${mode}-${new URL(await currentUrl(instance, target), 'http://x').hostname || 'page'}`,
     mime,
     sourceRef: target.handle,
-    meta: { mode, url: target.info.url, ...(args.label ? { label: args.label } : {}), ...(grid ? { grid } : {}) },
+    meta: { mode, url: target.info.url, ...(args.label ? { label: args.label } : {}), ...(grid ? { grid } : {}), ...(regions && goals.length ? { attention_targets: regions.goals } : {}) },
   });
 
   const out: Record<string, unknown> = {
@@ -1109,6 +1137,7 @@ export async function screenshot(
     url: await currentUrl(instance, target),
     title: target.info.title,
     ...(grid ? { grid } : {}),
+    ...(regions ? { screenshot_regions: regions, ...(moved ? { moving_regions: true } : {}) } : {}),
     ...(scale === 1 ? {} : { scaled: Number(scale.toFixed(3)) }),
     ...(sweep ? { scrolled_through: true } : {}),
     ...(tallPage ? { hint: 'This page is tall, so it reads small as one image. mode:"sheet" lays it out in columns on one screen.' } : {}),
@@ -2713,14 +2742,15 @@ export async function setViewport(
   instance.requireControl('page.set_viewport');
   if (args.reset) {
     await target.session.send('Emulation.clearDeviceMetricsOverride');
+    viewportOverrides.delete(target.session);
     return { target_id: target.handle, reset: true };
   }
-  await target.session.send('Emulation.setDeviceMetricsOverride', {
-    width: args.width,
-    height: args.height,
-    deviceScaleFactor: args.device_scale_factor ?? 1,
-    mobile: args.mobile === true,
-  });
+  const metrics = {
+    width: args.width, height: args.height,
+    deviceScaleFactor: args.device_scale_factor ?? 1, mobile: args.mobile === true,
+  };
+  await target.session.send('Emulation.setDeviceMetricsOverride', metrics);
+  viewportOverrides.set(target.session, metrics);
   return {
     target_id: target.handle,
     width: args.width,
