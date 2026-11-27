@@ -166,6 +166,24 @@ node -e "import('./dist/util/paths.js').then(m => console.log(m.resolveChromium(
 That prints the resolved path, the `source` that won (`env`, `config`,
 `playwright` or `system`), and `supportsExtensionFlags`.
 
+#### Optional Patchright launcher
+
+Browsered defaults to its native Chromium launcher. Select Patchright for a
+new browser by passing `launch_engine: "patchright"` to `browser.launch`, or
+set `AGENTBROWSER_LAUNCH_ENGINE=patchright` or `"launchEngine": "patchright"`
+in the daemon configuration to use it for automatic launches. Both CLI entry
+points accept `--launch-engine patchright`.
+
+An MCP agent can follow `guide.topic { "name": "patchright" }` to launch an
+isolated browser, verify its engine, and carry the returned `browser_id` through
+the task. `guide.search { "query": "Patchright" }` also finds the launch tool.
+
+Patchright manages the persistent Chromium process. Browsered uses the same
+Chromium executable discovery and its own DevTools connection for tools and
+recording, including console and network events. Browsered supplies the launch
+flags, so its extension, media and stealth settings still apply. Use a new
+profile or close the existing browser before switching launch engines.
+
 #### Chromium troubleshooting
 
 | Symptom | Cause and fix |

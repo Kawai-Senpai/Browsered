@@ -5,7 +5,7 @@
  * tools the way a model would. Every assertion goes through tools/call, so this
  * exercises schema validation, the handler wiring and the ops together.
  *
- *   node tests/mcp-live.mjs [--headed] [--keep]
+ *   node tests/mcp-live.mjs [--headed] [--keep] [--patchright]
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const HEADED = process.argv.includes('--headed');
 const KEEP = process.argv.includes('--keep');
+const PATCHRIGHT = process.argv.includes('--patchright');
 
 /* ------------------------------ test harness ----------------------------- */
 
@@ -215,11 +216,14 @@ async function main() {
 
   transport = new StdioClientTransport({
     command: process.execPath,
-    args: [join(ROOT, 'dist', 'cli.js'), '--log-level', 'warn', ...(HEADED ? [] : [])],
+    args: PATCHRIGHT
+      ? [join(ROOT, 'scripts', 'mcp-launch.mjs'), '--launch-engine', 'patchright']
+      : [join(ROOT, 'dist', 'cli.js')],
     env: {
       ...process.env,
       AGENTBROWSER_HOME: home,
       AGENTBROWSER_LOG_LEVEL: 'warn',
+      AGENTBROWSER_AUTO_UPDATE: '0',
       // Headless unless --headed, so the suite runs unattended.
       AGENTBROWSER_HEADLESS: HEADED ? '0' : '1',
     },
@@ -287,6 +291,7 @@ async function runSuite(tools) {
     const r = await call('browser.status');
     must(r.version?.product, 'no product');
     must(r.recording, 'no recording block');
+    if (PATCHRIGHT) must(r.launch_engine === 'patchright', `unexpected launcher: ${r.launch_engine}`);
     return r.version.product;
   });
   await check('browser.list_targets enumerates attached targets', async () => {
@@ -1286,6 +1291,40 @@ async function runSuite(tools) {
     const list = await call('browser.list');
     must(list.count === 0, `${list.count} still running`);
   });
+  if (PATCHRIGHT) {
+    await check('explicit launcher selection still reuses the profile', async () => {
+      const guide = await call('guide.orient');
+      const patchright = guide.common_tasks.find(task => task.tool === 'browser.launch' && task.args?.launch_engine === 'patchright');
+      must(patchright, 'guide.orient did not provide a Patchright launch example');
+      const name = 'patchright-reopen';
+      for (const launch_engine of ['patchright', 'native']) {
+        const browser = await call('browser.launch', {
+          ...(launch_engine === 'patchright' ? { ...patchright.args, url, headless: !HEADED } : {}),
+          profile: name,
+          launch_engine,
+        });
+        try {
+          must(browser.launch_engine === launch_engine, `unexpected launcher: ${browser.launch_engine}`);
+          const status = await call('browser.status', { browser_id: browser.browser_id });
+          must(status.status === 'ready' && status.launch_engine === launch_engine, 'browser.status did not confirm the launcher');
+          if (launch_engine === 'patchright') {
+            must(browser.landed?.url === url, 'startup URL did not commit');
+            await call('storage.set', {
+              browser_id: browser.browser_id, key: 'launcherTest', value: 'retained', kind: 'local',
+            });
+          } else {
+            await call('page.navigate', { browser_id: browser.browser_id, url });
+            const stored = await call('js.evaluate', {
+              browser_id: browser.browser_id, expression: "localStorage.getItem('launcherTest')",
+            });
+            must(stored.value === 'retained', 'localStorage did not survive the relaunch');
+          }
+        } finally {
+          await call('browser.close', { browser_id: browser.browser_id });
+        }
+      }
+    });
+  }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

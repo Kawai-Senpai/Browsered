@@ -64,6 +64,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^13.0.3",
+    "patchright": "1.64.3",
     "pixelmatch": "^8.0.0",
     "pngjs": "^7.0.0",
     "ws": "^8.21.3",

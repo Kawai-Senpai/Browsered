@@ -206,15 +206,17 @@ interface ToolNote {
 
 const TOOL_NOTES: Record<string, ToolNote> = {
   'browser.launch': {
-    when: 'You need something fixed at process start: headless or not, a profile, extensions, NetLog, stealth mode, or camera/microphone/screen capture through media. Otherwise let the first tool call auto-launch.',
+    when: 'You need a specific launcher, headless mode, a profile, extensions, NetLog, or other settings fixed at browser startup. Otherwise let the first tool call auto-launch.',
     how: 'Spawns Chromium against a persistent profile with the requested switches, attaches the recorders before the first page runs, then reports what actually committed rather than echoing the request.',
     caveats: [
+      'For Patchright, choose launch_engine:"patchright" on a fresh profile, save the returned browser_id, and verify it with browser.status on that ID. See guide.topic{name:"patchright"}.',
       'media is the only way past the getUserMedia permission bubble and the getDisplayMedia source picker: both are browser UI, outside the page, and no click reaches them. It cannot be switched on later; close and relaunch.',
       'getUserMedia and getDisplayMedia exist only in a secure context (https, or http://localhost / 127.0.0.1). With real devices the OS must also allow camera and microphone for desktop apps; fake_devices:true sidesteps both hardware and OS permission.',
       'A launch that passes media replaces the configured default (config.json media, AGENTBROWSER_MEDIA) whole; media:{} launches with none.',
       'stealth:true hides automation signals (navigator.webdriver, the Chrome for Testing banner, empty plugins list) so bot detectors like Cloudflare Turnstile treat the browser as a normal user session. Fixed at process start; close and relaunch to change it. Can also be set globally via config.json stealth:true or AGENTBROWSER_STEALTH=1.',
     ],
     examples: [
+      'browser.launch { "profile": "patchright-task", "launch_engine": "patchright", "headless": true }',
       'browser.launch { "stealth": true }',
       'browser.launch { "media": { "camera": true, "microphone": true, "fake_devices": true, "screen": true } }',
       'browser.launch { "media": { "camera": true, "video_file": "C:/fixtures/face.y4m", "audio_file": "C:/fixtures/voice.wav" } }',
@@ -560,6 +562,38 @@ interface Topic {
 }
 
 const TOPICS: Record<string, Topic> = {
+  patchright: {
+    title: 'Run a task with Patchright',
+    summary: 'Launch Patchright from MCP, verify the engine, and keep working in the right browser.',
+    body: `Use this workflow when the task requests Patchright. For ordinary browser
+work, use the daemon's configured launcher. Selecting a launcher in
+browser.launch applies to that browser. MCP agents can do this with tool calls
+from the running server.
+
+1. If you need to check for an existing session, call browser.list {}. This
+   lists live browsers without starting one. To reuse a session the user wants,
+   call browser.status with its browser_id and check launch_engine.
+2. For a new session, choose a fresh task-specific profile name, such as
+   patchright-task-a17, and call
+   browser.launch { "profile": "patchright-task-a17", "launch_engine": "patchright", "headless": true }
+   Use headless:false when a human needs a visible window.
+3. Save the returned browser_id and call browser.status { "browser_id": "<id>" }.
+   Continue once status is ready and launch_engine is "patchright". Drive that
+   exact session with page.navigate { "browser_id": "<id>", "url": "<task URL>" }.
+   Pass the same ID to later calls and check the observed navigation result.
+4. When the task is done, close a temporary browser you launched with
+   browser.close { "browser_id": "<id>" }, unless the task needs it left open.
+   Keep existing user sessions open. If browser.reveal relaunches your browser,
+   use its new browser_id and verify the launcher again.
+
+If launch reports profile_in_use and the task can use a separate profile, retry
+with a fresh profile name. If the task needs a particular occupied profile,
+check whether its running browser already uses Patchright. If it uses a different
+engine, report the conflict and keep the existing browser open. A missing
+launch_engine field or argument can indicate an older MCP server. Reconnect
+to the rebuilt Browsered server when available. For other startup failures,
+report the tool's error and say whether a Patchright session was verified.`,
+  },
   start: {
     title: 'Start here',
     summary: 'What browserd is, and the order to do things in.',
@@ -1258,6 +1292,12 @@ export async function guideList(
 /* --------------------------------- search --------------------------------- */
 
 const TASK_ROUTES = [
+  {
+    task: 'Launch a separate Patchright browser for a task', tool: 'browser.launch',
+    args: { profile: 'patchright-task', launch_engine: 'patchright', headless: true },
+    symptom: /\bpatchright\b/,
+    needs: 'Choose a fresh task-specific profile name. Verify launch_engine using browser.status with the returned browser_id.',
+  },
   {
     task: 'Review the current page on phone and desktop', tool: 'visual.review', args: { widths: [320, 414, 1280] },
     symptom: /visual (?:qa|review|regression|baseline)|review.{0,22}layout|spacing|alignment|screenshot diff|compare.{0,24}before.{0,8}after/,

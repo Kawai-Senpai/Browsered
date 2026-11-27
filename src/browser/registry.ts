@@ -48,6 +48,7 @@ export class BrowserRegistry {
     } catch (err) {
       if (!(err instanceof ProfileInUseError) || !err.owner.wsEndpoint) throw err;
       const fixedAtStart =
+        options.launchEngine || this.config.launchEngine === 'patchright' ||
         options.media || options.extensions?.length || options.args?.length || options.netLog || options.freshProfile;
       if (fixedAtStart) throw err;
       log.info(`profile ${options.profile} is already running; attaching to it`);
@@ -97,6 +98,7 @@ export class BrowserRegistry {
               profile: record.profile,
               userDataDir: record.userDataDir,
               pid: record.pid,
+              launchEngine: record.launchEngine,
               browserId: record.browserId,
             },
             this.stores,
@@ -135,6 +137,7 @@ export class BrowserRegistry {
         pid: instance.pid ?? 0,
         ownerPid: process.pid,
         executable: instance.executable,
+        ...(instance.launchEngine ? { launchEngine: instance.launchEngine } : {}),
         extensions: instance.extensions,
         headless: false,
         startedAt: instance.launchedAt,

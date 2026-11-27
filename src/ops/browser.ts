@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { ROOT_SESSION } from '../cdp/connection.js';
 import type { BrowserInstance } from '../browser/instance.js';
-import { mediaArgs, type MediaOptions } from '../browser/launcher.js';
+import { mediaArgs, type LaunchEngine, type MediaOptions } from '../browser/launcher.js';
 import type { ManagedTarget } from '../browser/target-manager.js';
 import { evaluate } from './element.js';
 import type { ControlMode } from '../config.js';
@@ -222,6 +222,7 @@ export async function launch(
   args: {
     profile?: string;
     headless?: boolean;
+    launch_engine?: LaunchEngine;
     url?: string;
     extensions?: string[];
     chromium_path?: string;
@@ -235,6 +236,7 @@ export async function launch(
   const instance = await ctx.registry.launch({
     profile: args.profile ?? ctx.config.autoLaunchProfile,
     headless: args.headless ?? ctx.config.autoLaunchHeadless,
+    launchEngine: args.launch_engine,
     ...(args.extensions ? { extensions: args.extensions } : {}),
     ...(args.chromium_path ? { chromiumPath: args.chromium_path } : {}),
     ...(args.capture_netlog ? { netLog: true } : {}),
@@ -264,6 +266,7 @@ export async function launch(
     product: instance.version?.product ?? null,
     user_data_dir: instance.userDataDir,
     extensions_loaded: instance.extensions,
+    launch_engine: instance.launchEngine,
     netlog_path: instance.netLogPath,
     stealth: instance.stealth,
     ...(media ? { media } : {}),
@@ -452,6 +455,7 @@ export async function status(
     control_mode: instance.controlMode,
     managed: instance.managed,
     headless: instance.headless,
+    launch_engine: instance.launchEngine,
     stealth: instance.stealth,
     pid: instance.pid,
     executable: instance.executable,
@@ -610,6 +614,7 @@ export async function reveal(
   const launchOptions = {
     profile,
     headless: false,
+    launchEngine: instance.launchEngine ?? undefined,
     stealth: instance.stealth,
     ...(extensions.length > 0 ? { extensions } : {}),
     // Media switches are fixed at process start too; losing them here would

@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { AgentBrowserError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { bundledExtensions, paths, resolveChromium, type ResolvedBrowser } from '../util/paths.js';
+import { isAlive } from './discovery.js';
 import { STEALTH_ARGS } from './stealth.js';
 
 const log = createLogger('browser:launch');
@@ -187,6 +188,7 @@ export function mediaPermissions(media: MediaOptions | undefined): string[] {
 
 export interface LaunchOptions {
   profile: string;
+  launchEngine?: LaunchEngine;
   headless?: boolean;
   /** Absolute paths to unpacked extension directories. */
   extensions?: string[];
@@ -212,8 +214,11 @@ export interface LaunchOptions {
   env?: Record<string, string>;
 }
 
+export type LaunchEngine = 'native' | 'patchright';
+
 export interface LaunchedBrowser {
-  process: ChildProcess;
+  process: ChildProcess | null;
+  closeLauncher?: () => Promise<void>;
   pid: number;
   wsEndpoint: string;
   port: number;
@@ -366,14 +371,14 @@ export async function findProfileOwner(userDataDir: string): Promise<ProfileOwne
  */
 async function readDevToolsActivePort(
   userDataDir: string,
-  child: ChildProcess,
   timeoutMs: number,
+  child?: ChildProcess,
 ): Promise<{ port: number; path: string }> {
   const file = join(userDataDir, 'DevToolsActivePort');
   const deadline = Date.now() + timeoutMs;
   let exitInfo: string | null = null;
   let exitCode: number | null = null;
-  child.once('exit', (code, signal) => {
+  child?.once('exit', (code, signal) => {
     exitInfo = `code=${code} signal=${signal}`;
     exitCode = code;
   });
@@ -508,16 +513,73 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
   }
 
   if (options.args?.length) args.push(...options.args);
+  if (options.launchEngine === 'patchright') args.push('--remote-debugging-pipe');
   if (options.urls?.length) args.push(...options.urls);
   else args.push('about:blank');
 
   log.info(`launching ${resolved.executablePath} (profile=${options.profile})`);
   log.debug('args', args);
 
+  const env = { ...process.env, ...options.env };
+  const timeout = options.launchTimeoutMs ?? 45_000;
+  if (options.launchEngine === 'patchright') {
+    const { chromium } = await import('patchright');
+    const deadline = Date.now() + timeout;
+    // Browsered owns the Chromium command line and the WebSocket recorder.
+    // Patchright owns the persistent process through its additional CDP pipe.
+    const context = await chromium.launchPersistentContext(userDataDir, {
+      executablePath: resolved.executablePath,
+      ignoreDefaultArgs: true,
+      viewport: null,
+      headless: options.headless === true,
+      args,
+      env,
+      timeout,
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
+    });
+    try {
+      const browser = context.browser();
+      if (!browser) throw new Error('Patchright did not return a persistent Chromium browser');
+      const session = await browser.newBrowserCDPSession();
+      const { processInfo } = await session.send('SystemInfo.getProcessInfo');
+      await session.detach();
+      const pid = processInfo.find((entry) => entry.type === 'browser')?.id;
+      if (!pid) throw new Error('Patchright launched Chromium but did not report its pid');
+      const { port, path } = await readDevToolsActivePort(userDataDir, Math.max(100, deadline - Date.now()));
+      return {
+        process: null,
+        closeLauncher: async () => {
+          const closed = browser.close();
+          // Chromium can close its CDP socket while its process lingers.
+          // Give it time to flush the profile, then reap it as on native launches.
+          try {
+            await Promise.race([closed, delay(2_000, undefined, { ref: false })]);
+          } finally {
+            await killBrowserProcess(null, pid);
+          }
+          await closed;
+        },
+        pid,
+        wsEndpoint: `ws://127.0.0.1:${port}${path}`,
+        port,
+        userDataDir,
+        executable: resolved.executablePath,
+        resolved,
+        netLogPath,
+        extensionsLoaded: extensions,
+      };
+    } catch (err) {
+      await context.close().catch((closeErr) => log.warn('failed to close Patchright Chromium', closeErr));
+      throw err;
+    }
+  }
+
   const child = spawn(resolved.executablePath, args, {
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...(options.env ?? {}) },
+    env,
     windowsHide: options.headless === true,
   });
 
@@ -533,8 +595,8 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
 
   const { port, path } = await readDevToolsActivePort(
     userDataDir,
+    timeout,
     child,
-    options.launchTimeoutMs ?? 45_000,
   );
   const wsEndpoint = `ws://127.0.0.1:${port}${path}`;
   log.info(`chromium ready pid=${child.pid} ws=${wsEndpoint}`);
@@ -553,8 +615,9 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchedBro
 }
 
 /** Best-effort teardown: the browser tree, not just the launcher process. */
-export async function killBrowserProcess(child: ChildProcess, pid: number): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+export async function killBrowserProcess(child: ChildProcess | null, pid: number): Promise<void> {
+  const running = () => child ? child.exitCode === null && child.signalCode === null : isAlive(pid);
+  if (!running()) return;
   if (process.platform === 'win32') {
     await new Promise<void>((resolve) => {
       const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
@@ -564,14 +627,16 @@ export async function killBrowserProcess(child: ChildProcess, pid: number): Prom
     return;
   }
   try {
-    child.kill('SIGTERM');
+    if (child) child.kill('SIGTERM');
+    else process.kill(pid, 'SIGTERM');
   } catch {
     /* already gone */
   }
   await delay(500);
-  if (child.exitCode === null && child.signalCode === null) {
+  if (running()) {
     try {
-      child.kill('SIGKILL');
+      if (child) child.kill('SIGKILL');
+      else process.kill(pid, 'SIGKILL');
     } catch {
       /* already gone */
     }

@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import type { LaunchEngine } from './launcher.js';
 import { createLogger } from '../util/logger.js';
 import { paths } from '../util/paths.js';
 
@@ -36,6 +37,7 @@ export interface BrowserRecord {
   /** The `browserd open` process, if one is supervising. */
   ownerPid: number | null;
   executable: string | null;
+  launchEngine?: LaunchEngine;
   extensions: string[];
   headless: boolean;
   startedAt: number;

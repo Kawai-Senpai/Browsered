@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import type { MediaOptions } from './browser/launcher.js';
+import type { LaunchEngine, MediaOptions } from './browser/launcher.js';
 import type { LogLevel } from './util/logger.js';
 import { paths } from './util/paths.js';
 
@@ -32,6 +32,7 @@ export interface DaemonConfig {
   logLevel: LogLevel;
   logFile: string | null;
   chromiumPath?: string;
+  launchEngine?: LaunchEngine;
   defaultControlMode: ControlMode;
   recorder: RecorderConfig;
   /** Origins accepted by the MCP HTTP transport (DNS-rebinding defense). */
@@ -65,6 +66,7 @@ export const DEFAULT_CONFIG: DaemonConfig = {
   port: 7331,
   logLevel: 'info',
   logFile: null,
+  launchEngine: 'native',
   defaultControlMode: 'shared',
   recorder: {
     captureResponseBodies: true,
@@ -139,6 +141,9 @@ export function loadConfig(overrides?: Partial<DaemonConfig>): DaemonConfig {
   if (process.env.AGENTBROWSER_LOG_LEVEL) {
     config = { ...config, logLevel: process.env.AGENTBROWSER_LOG_LEVEL as LogLevel };
   }
+  if (process.env.AGENTBROWSER_LAUNCH_ENGINE) {
+    config = { ...config, launchEngine: parseLaunchEngine(process.env.AGENTBROWSER_LAUNCH_ENGINE) };
+  }
   // Lets CI and test harnesses run unattended without passing CLI flags through
   // an MCP client's `command`/`args`.
   if (process.env.AGENTBROWSER_HEADLESS) {
@@ -151,7 +156,13 @@ export function loadConfig(overrides?: Partial<DaemonConfig>): DaemonConfig {
     config = { ...config, stealth: process.env.AGENTBROWSER_STEALTH !== '0' };
   }
   if (overrides) config = mergeConfig(config, overrides);
+  if (config.launchEngine !== undefined) parseLaunchEngine(config.launchEngine);
   return config;
+}
+
+export function parseLaunchEngine(value: unknown): LaunchEngine {
+  if (value === 'native' || value === 'patchright') return value;
+  throw new Error('Launch engine must be "native" or "patchright".');
 }
 
 /** Mutating operations are refused unless the human has handed over control. */

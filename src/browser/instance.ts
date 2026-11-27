@@ -18,6 +18,7 @@ import {
   killBrowserProcess,
   launchBrowser,
   mediaPermissions,
+  type LaunchEngine,
   type LaunchOptions,
   type MediaOptions,
 } from './launcher.js';
@@ -42,6 +43,8 @@ export interface BrowserInstanceInit {
   executable: string | null;
   pid: number | null;
   process: ChildProcess | null;
+  launchEngine?: LaunchEngine;
+  closeLauncher?: () => Promise<void>;
   /** False for browsers the daemon merely attached to; those are never killed. */
   managed: boolean;
   /** null for attached browsers: the daemon did not launch them, so it cannot know. */
@@ -68,6 +71,7 @@ export class BrowserInstance {
   readonly executable: string | null;
   readonly pid: number | null;
   readonly managed: boolean;
+  readonly launchEngine: LaunchEngine | null;
   /** Whether this Chromium was launched without a window. null when unknown. */
   readonly headless: boolean | null;
   readonly extensions: string[];
@@ -94,6 +98,7 @@ export class BrowserInstance {
   private readonly stores: Stores;
   private readonly config: DaemonConfig;
   private readonly process: ChildProcess | null;
+  private readonly closeLauncher?: () => Promise<void>;
   private readonly log: Logger;
   private readonly closeListeners = new Set<(reason: string) => void>();
 
@@ -151,6 +156,8 @@ export class BrowserInstance {
     this.headless = init.headless;
     this.pid = init.pid;
     this.managed = init.managed;
+    this.launchEngine = init.launchEngine ?? null;
+    this.closeLauncher = init.closeLauncher;
     this.extensions = init.extensions;
     this.netLogPath = init.netLogPath;
     this.media = init.media;
@@ -195,9 +202,12 @@ export class BrowserInstance {
     // so media:{} is how one launch opts out of a default.
     const media = options.media ?? config.media ?? undefined;
     const stealth = options.stealth ?? config.stealth;
+    const launchEngine = options.launchEngine ?? config.launchEngine ?? 'native';
     const launched = await launchBrowser({
       ...options,
       stealth,
+      launchEngine,
+      ...(launchEngine === 'patchright' ? { urls: undefined } : {}),
       chromiumPath: options.chromiumPath ?? config.chromiumPath,
       ...(media ? { media } : {}),
     });
@@ -209,6 +219,8 @@ export class BrowserInstance {
       executable: launched.executable,
       pid: launched.pid,
       process: launched.process,
+      closeLauncher: launched.closeLauncher,
+      launchEngine,
       managed: true,
       headless: options.headless === true,
       extensions: launched.extensionsLoaded,
@@ -218,12 +230,39 @@ export class BrowserInstance {
       stores,
       config,
     });
-    launched.process.once('exit', (code, signal) => {
+    launched.process?.once('exit', (code, signal) => {
       instance.handleGone(`chromium exited (code=${code} signal=${signal})`);
     });
-    await instance.start();
+    try {
+      await instance.start();
+    } catch (err) {
+      instance.connection.close();
+      if (launched.closeLauncher) {
+        await launched.closeLauncher().catch((closeErr) => instance.log.warn('launcher cleanup failed', closeErr));
+      } else if (launched.process) {
+        await killBrowserProcess(launched.process, launched.pid);
+      }
+      throw err;
+    }
     await instance.grantMediaPermissions();
+    if (launchEngine === 'patchright' && options.urls?.length) {
+      await instance.openStartupUrls(options.urls);
+    }
     return instance;
+  }
+
+  private async openStartupUrls(urls: string[]): Promise<void> {
+    try {
+      // Begin navigation only after the driver and the Browsered recorders
+      // have attached to the persistent Chromium instance.
+      const page = await this.resolvePageOrOpen();
+      await page.session.send('Page.navigate', { url: urls[0] }, 10_000);
+      for (const url of urls.slice(1)) {
+        await this.browserSession.send('Target.createTarget', { url }, 5_000);
+      }
+    } catch (err) {
+      this.log.debug('could not open startup URLs', err);
+    }
   }
 
   /** Attach to a Chromium someone else launched. Never killed by the daemon. */
@@ -233,6 +272,7 @@ export class BrowserInstance {
       profile?: string;
       userDataDir?: string;
       pid?: number;
+      launchEngine?: LaunchEngine;
       /**
        * Reuse an existing handle when adopting a browser from the discovery
        * registry. Minting a fresh one would give the same window a different
@@ -251,6 +291,7 @@ export class BrowserInstance {
       executable: null,
       pid: input.pid ?? null,
       process: null,
+      launchEngine: input.launchEngine,
       managed: false,
       headless: null,
       extensions: [],
@@ -510,7 +551,9 @@ export class BrowserInstance {
     }
     this.connection.close();
 
-    if (this.managed && this.process && this.pid !== null) {
+    if (this.closeLauncher) {
+      await this.closeLauncher().catch((err) => this.log.warn('launcher close failed', err));
+    } else if (this.managed && this.process && this.pid !== null) {
       await killBrowserProcess(this.process, this.pid);
     }
     this.handleGone('closed by request');

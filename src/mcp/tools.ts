@@ -260,6 +260,7 @@ export const TOOLS: ToolDef[] = [
       'Launch a new Chromium with a persistent profile. Not usually needed: any tool auto-launches a browser when none is running. Needed for camera, microphone or screen capture: pass media (e.g. {camera:true, microphone:true, fake_devices:true, screen:true}) so getUserMedia/getDisplayMedia prompts and the screen picker are answered automatically. When url is given, the result reports what actually committed (landed.url, landed.title, landed.http_status) rather than echoing the request.',
     schema: {
       profile: z.string().optional().describe('Named persistent profile. Reused across runs.'),
+      launch_engine: z.enum(['native', 'patchright']).optional().describe('Choose Patchright when the task requests it. Use a fresh profile and keep the returned browser_id for later tools. Defaults to the configured engine, normally native.'),
       headless: z.boolean().optional().describe('Default false: a visible window a human can also use.'),
       url: z
         .string()

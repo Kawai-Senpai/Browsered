@@ -89,6 +89,10 @@ export function createMcpServer(ctx: OpsContext): McpServer {
   const requested = process.env.AGENTBROWSER_TOOL_FAMILIES?.split(',').map(name => name.trim()).filter(Boolean) ?? [];
   const families = new Set(['guide', ...requested]);
   const tools = requested.length ? TOOLS.filter(tool => families.has(tool.name.split('.')[0]!)) : TOOLS;
+  const launcherInstructions =
+    'If the task asks for Patchright, call browser.launch with launch_engine:"patchright", headless:true for unattended work, ' +
+    'and a fresh task-specific profile. Save the returned browser_id and confirm launch_engine with browser.status on that ID. ' +
+    'Keep passing that ID to browser and page tools. See guide.topic{name:"patchright"} for profile reuse and recovery.';
   const server = new McpServer(
     { name: 'browserd', version: '0.1.0' },
     {
@@ -96,11 +100,13 @@ export function createMcpServer(ctx: OpsContext): McpServer {
         requested.length
           ? `This Browsered server exposes ${[...new Set(tools.map(tool => tool.name.split('.')[0]))].join(', ')}. ` +
             'Use guide.search for the user’s task or symptom and guide.tool for examples. ' +
+            (families.has('browser') ? launcherInstructions + ' ' : '') +
             (families.has('visual') ? 'For frontend QA, use visual.review. For a visible control that cannot be clicked, use visual.inspect_target.' : '')
           : 'A continuously-recording Chromium with programmable DevTools.\n\n' +
         'Network, console, exceptions and navigations are recorded the whole time, ' +
         'whether or not you asked for them, so queries about the past always work. ' +
         'A browser is launched automatically the first time a tool needs one.\n\n' +
+        launcherInstructions + '\n\n' +
         'New here? Call guide.orient once: it returns every tool family, what each ' +
         'is for, which tool fits the situations that come up most, and the techniques ' +
         'sessions habitually skip. One call beats discovering 200+ tools by trial.\n\n' +

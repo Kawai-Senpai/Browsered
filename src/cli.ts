@@ -7,8 +7,9 @@ import { join } from 'node:path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { discover, findByProfile, heartbeat } from './browser/discovery.js';
+import type { LaunchEngine } from './browser/launcher.js';
 import { BrowserRegistry } from './browser/registry.js';
-import { loadConfig, type DaemonConfig } from './config.js';
+import { loadConfig, parseLaunchEngine, type DaemonConfig } from './config.js';
 import { createMcpServer, TOOLS } from './mcp/server.js';
 import { bundle as captureBundle } from './ops/capture.js';
 import type { OpsContext } from './ops/context.js';
@@ -24,6 +25,7 @@ interface CliOptions {
   port?: number;
   host?: string;
   headless?: boolean;
+  launchEngine?: LaunchEngine;
   profile?: string;
   noAutoLaunch?: boolean;
   logLevel?: string;
@@ -87,6 +89,9 @@ function parseArgs(argv: string[]): CliOptions {
         break;
       case '--headless':
         options.headless = true;
+        break;
+      case '--launch-engine':
+        options.launchEngine = parseLaunchEngine(argv[++i]);
         break;
       case '--no-auto-launch':
         options.noAutoLaunch = true;
@@ -158,6 +163,7 @@ Options:
   --host HOST        HTTP bind address (default 127.0.0.1; do not expose publicly).
   --profile NAME     Profile used by auto-launched browsers.
   --headless         Auto-launch headless. Default is a visible window you can also use.
+  --launch-engine E  Launch with native (default) or patchright.
   --stealth          Hide automation signals from bot detectors (Cloudflare, etc.).
   --no-auto-launch   Never spawn a browser implicitly; require browser.launch.
   --log-level LEVEL  trace | debug | info | warn | error.
@@ -182,6 +188,7 @@ function buildConfig(options: CliOptions): DaemonConfig {
   if (options.host) overrides.host = options.host;
   if (options.profile) overrides.autoLaunchProfile = options.profile;
   if (options.headless) overrides.autoLaunchHeadless = true;
+  if (options.launchEngine) overrides.launchEngine = options.launchEngine;
   if (options.stealth) overrides.stealth = true;
   if (options.noAutoLaunch) overrides.autoLaunch = false;
   if (options.logLevel) overrides.logLevel = options.logLevel as DaemonConfig['logLevel'];

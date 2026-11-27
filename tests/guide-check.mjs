@@ -299,6 +299,20 @@ async function runSuite() {
   /* ------------------------------ D: topics ------------------------------ */
   area('D: long-form topics');
 
+  await check('Patchright is discoverable and has a complete MCP workflow', async () => {
+    assert(client.getInstructions()?.includes('guide.topic{name:"patchright"}'), 'missing from MCP initialization');
+    const search = await call('guide.search', { query: 'Patchright', limit: 5 });
+    assert(search.results[0]?.name === 'browser.launch', 'Patchright search did not lead to browser.launch');
+    assert(search.results.some(hit => hit.kind === 'topic' && hit.name === 'patchright'), 'missing Patchright topic');
+    const orient = await call('guide.orient');
+    assert(orient.common_tasks.some(task => task.tool === 'browser.launch' && task.args?.launch_engine === 'patchright'),
+      'missing Patchright launch arguments in guide.orient');
+    const doc = await call('guide.topic', { name: 'patchright' });
+    for (const step of ['browser.status', 'browser_id', 'page.navigate', 'browser.close', 'profile_in_use']) {
+      assert(doc.body.includes(step), `Patchright workflow missing ${step}`);
+    }
+  });
+
   await check('every advertised topic can be fetched and is substantial', async () => {
     const index = await call('guide.list', { kind: 'topics' });
     assert(index.topics.length >= 6, `only ${index.topics.length} topics`);
