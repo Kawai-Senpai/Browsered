@@ -264,7 +264,7 @@ async function waitForLifecycle(
 
 export async function navigate(
   ctx: OpsContext,
-  args: PageArgs & { url: string; wait_until?: 'load' | 'domcontentloaded' | 'networkidle' | 'none'; timeout_ms?: number },
+  args: PageArgs & { url: string; wait_until?: 'load' | 'domcontentloaded' | 'networkidle' | 'none'; timeout_ms?: number; verify_ms?: number },
 ): Promise<Record<string, unknown>> {
   const { instance, target } = await pageOf(ctx, args);
   instance.requireControl('page.navigate');
@@ -284,22 +284,40 @@ export async function navigate(
           timeout,
         );
 
-  const result = await target.session.send<{ frameId: string; loaderId?: string; errorText?: string }>(
-    'Page.navigate',
-    { url: args.url },
-    timeout,
-  );
+  let result: { frameId: string; loaderId?: string; errorText?: string };
+  const started = Date.now();
+  try {
+    result = await target.session.send('Page.navigate', { url: args.url }, timeout);
+  } catch (error) {
+    if (!(error instanceof TimeoutError)) throw error;
+    const rendererResponsive = await responsive(target, 1_000);
+    const documentRequests = ctx.stores.network.count({
+      browserId: instance.id, targetHandle: target.handle, resourceType: 'Document', since: started,
+    });
+    throw new AgentBrowserError('timeout', error.message, {
+      ...error.details,
+      target_id: target.handle,
+      current_url: target.info.url,
+      renderer_responsive: rendererResponsive,
+      document_requests: documentRequests,
+      hint: rendererResponsive
+        ? 'Check the current tab and its document requests before retrying.'
+        : 'This tab did not respond to DevTools. Open a fresh tab or use page.reset_target to recover this tab.',
+    });
+  }
   const settled = lifecycle ? await lifecycle : null;
+  const verifyMs = Math.min(args.verify_ms ?? 0, Math.max(0, timeout - (Date.now() - started)));
+  if (verifyMs > 0 && !result.errorText) await delay(verifyMs);
 
-  const current = await currentUrl(instance, target);
   const landed = await documentIdentity(instance, target);
+  const current = landed.url;
 
   /*
    * The committed document title is the cheapest identity check there is, and
    * the one that catches "this port is serving a different project" - a dev
    * server collision between sibling repos is an extremely common setup.
    */
-  const status = documentStatus(ctx, instance.id, target.handle, current);
+  const status = documentStatus(ctx, instance.id, target.handle, current, result.frameId);
   const committed = result.errorText ? false : current !== 'about:blank';
 
   return {
@@ -307,7 +325,7 @@ export async function navigate(
     requested_url: args.url,
     url: current,
     title: landed.title,
-    ...(status === null ? {} : { http_status: status }),
+    ...(status === null ? {} : { http_status: status, http_error: status >= 400 }),
     committed,
     frame_id: result.frameId,
     error: result.errorText ?? null,
@@ -347,16 +365,18 @@ function documentStatus(
   browserId: string,
   targetHandle: string,
   url: string,
+  frameId: string,
 ): number | null {
   try {
     const rows = ctx.stores.network.list({
       browserId,
       targetHandle,
       resourceType: 'Document',
-      limit: 10,
+      limit: 50,
       order: 'desc',
     });
-    const match = rows.find((row) => row.url === url) ?? rows[0];
+    const current = url.split('#', 1)[0];
+    const match = rows.find((row) => row.frame_id === frameId && row.url.split('#', 1)[0] === current);
     return match?.status ?? null;
   } catch {
     return null;

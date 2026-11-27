@@ -422,12 +422,13 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'page.navigate',
     description:
-      'Navigate to a URL and wait for the load state. Reports the committed URL, the document title and its HTTP status, so a dev server serving a different project on the expected port is visible immediately.',
+      'Navigate to a URL and wait for the load state. Reports the committed URL, the document title and its HTTP status, and flags HTTP errors. Set verify_ms for pages that navigate again shortly after loading.',
     schema: {
       ...scope,
       url: z.string(),
       wait_until: z.enum(['load', 'domcontentloaded', 'networkidle', 'none']).optional(),
       timeout_ms: z.number().optional(),
+      verify_ms: z.number().int().min(0).max(5000).optional().describe('Observe follow-up navigation for up to this many ms before reporting the displayed document. Counts toward timeout_ms. Default 0.'),
     },
     handler: op(pageOps.navigate),
   },

@@ -130,6 +130,18 @@ async function startFixture() {
       res.end(FIXTURE_HTML);
       return;
     }
+    if (url.pathname === '/delayed-denial') {
+      const followup = req.headers.cookie?.includes('fixture-reloaded=1');
+      res.writeHead(followup ? 403 : 200, {
+        'content-type': 'text/html',
+        'cache-control': 'no-store',
+        ...(!followup ? { 'set-cookie': 'fixture-reloaded=1; Path=/delayed-denial' } : {}),
+      });
+      res.end(followup
+        ? '<title>Page unavailable</title><p>Access denied</p>'
+        : '<title>Initial document</title><script>setTimeout(() => location.reload(), 120)</script>');
+      return;
+    }
     if (url.pathname === '/api/ok') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
@@ -188,6 +200,21 @@ async function main() {
     must(r.http_status === 200, `http_status was ${r.http_status}`);
     must(r.committed === true, 'committed was not true');
     return `title=${JSON.stringify(r.title)} status=${r.http_status}`;
+  });
+
+  await check('page.navigate verifies a follow-up 403 at the same URL', async () => {
+    const tab = await call('page.new_tab');
+    try {
+      const r = await call('page.navigate', {
+        target_id: tab.target_id, url: fixture.base + '/delayed-denial',
+        wait_until: 'domcontentloaded', verify_ms: 800,
+      });
+      must(r.committed && r.title === 'Page unavailable', JSON.stringify(r));
+      must(r.http_status === 403 && r.http_error === true, JSON.stringify(r));
+      return 'initial 200 followed by the displayed 403';
+    } finally {
+      await call('page.close_tab', { target_id: tab.target_id });
+    }
   });
 
   await check('browser.status lists page targets with url and title', async () => {
