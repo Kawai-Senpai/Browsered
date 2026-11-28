@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Screenshot preview</title>
+    <link rel="stylesheet" href="preview.css">
+    <script src="preview.js" type="module"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Screenshot</h1>
+      <div class="actions">
+        <button id="copy" type="button" disabled>Copy image</button>
+        <a id="save" hidden>Save PNG</a>
+        <button id="draw" type="button" aria-pressed="false" disabled>Draw</button>
+        <button id="undo" type="button" disabled>Undo stroke</button>
+      </div>
+      <p id="status" role="status"></p>
+    </header>
+    <main>
+      <div class="image-frame" hidden>
+        <img id="capture" alt="Captured web page" draggable="false">
+        <canvas id="ink" aria-label="Freehand annotation layer" hidden></canvas>
+      </div>
+    </main>
+  </body>
+</html>

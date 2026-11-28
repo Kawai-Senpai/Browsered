@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "125",
+  "name": "Browsered Screenshot",
+  "description": "Copy or save the visible page, the full scrollable page, or a region you select.",
+  "version": "1.0.0",
+  "permissions": ["activeTab", "clipboardWrite", "contextMenus", "scripting"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": {
+    "default_title": "Browsered Screenshot",
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "icons": { "32": "icon.png" }
+}

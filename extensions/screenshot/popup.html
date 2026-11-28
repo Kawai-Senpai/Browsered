@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Browsered Screenshot</title>
+    <link rel="stylesheet" href="popup.css">
+    <script src="popup.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1><img src="icon.png" alt="" width="23" height="23"> Take a screenshot</h1>
+      <button type="button" data-mode="region">
+        <span class="icon region" aria-hidden="true"></span>
+        <span><strong>Select an area</strong><small>Drag a box on the page</small></span>
+      </button>
+      <button type="button" data-mode="visible">
+        <span class="icon visible" aria-hidden="true"></span>
+        <span><strong>Capture visible area</strong><small>Capture what’s on screen</small></span>
+      </button>
+      <button type="button" data-mode="full">
+        <span class="icon full" aria-hidden="true"></span>
+        <span><strong>Capture full page</strong><small>Include content below the fold</small></span>
+      </button>
+      <p id="status" role="status" hidden></p>
+    </main>
+  </body>
+</html>

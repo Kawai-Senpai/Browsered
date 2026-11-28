@@ -40,23 +40,22 @@ const must = (c, m) => {
 const config = { ...loadConfig(), autoLaunchProfile: 'ext-check' };
 const stores = createStores();
 const registry = new BrowserRegistry(stores, config);
+const capsuleDir = bundledExtensions().find((dir) => dir.split(/[\\/]/).at(-1) === 'context-capsule');
 
 console.log('\n\x1b[1mBundled extension\x1b[0m\n');
 
 let instance;
 try {
   await test('bundled extension is present on disk', async () => {
-    const dirs = bundledExtensions();
-    must(dirs.length >= 1, 'no bundled extensions found');
-    const manifest = JSON.parse(readFileSync(join(dirs[0], 'manifest.json'), 'utf8'));
+    must(capsuleDir, 'Context Capsule is missing');
+    const manifest = JSON.parse(readFileSync(join(capsuleDir, 'manifest.json'), 'utf8'));
     must(manifest.name === 'Context Capsule', `unexpected name: ${manifest.name}`);
     must(!manifest.permissions.includes('nativeMessaging'), 'nativeMessaging still requested');
     return `${manifest.name} v${manifest.version}, ${manifest.permissions.length} permissions`;
   });
 
   await test('native messaging is fully stripped from the vendored code', async () => {
-    const dir = bundledExtensions()[0];
-    const src = readFileSync(join(dir, 'sidepanel.js'), 'utf8');
+    const src = readFileSync(join(capsuleDir, 'sidepanel.js'), 'utf8');
     for (const banned of ['connectNative', 'com.contextcapsule', 'describeNativeError']) {
       must(!src.includes(banned), `${banned} still present`);
     }
@@ -68,7 +67,8 @@ try {
   // a human actually gets.
   await test('headed launch loads the extension', async () => {
     instance = await registry.launch({ profile: 'ext-check', headless: false });
-    must(instance.extensions.length >= 1, 'launcher reported no extensions loaded');
+    must(instance.extensions.includes(capsuleDir), 'launcher did not load Context Capsule');
+    must(instance.extensions.some((dir) => dir.split(/[\\/]/).at(-1) === 'screenshot'), 'launcher did not load Browsered Screenshot');
     return instance.extensions.map((p) => p.split(/[\\/]/).pop()).join(', ');
   });
 

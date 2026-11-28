@@ -1154,7 +1154,7 @@ npm test                      # build + live MCP suite + HTTP suite + session/wo
 npm run test:live             # 136 checks: real MCP client, real Chromium, local fixture
 npm run test:live:headed      # same, with a visible window
 npm run test:deep             # 35 checks against a real public site
-npm run test:extension        # 7 checks: the bundled panel in a real browser
+npm run test:extension        # bundled panel and screenshot menu in a real browser
 npm run test:discovery        # 9 checks: cross-process discovery and late attach
 npm run test:http             # Streamable HTTP transport + origin guard
 npm run test:session          # 32 checks: session restore, workflow replay, handover, credentials
@@ -1187,6 +1187,27 @@ They assert behaviour, not that a call returned:
 1603-node accessibility tree, and an 8MB heap delta detected.
 
 ---
+
+## Screenshots from the browser
+
+Right-click an HTTP or HTTPS page in a headed Browsered window and open
+**Browsered Screenshot**. You can also open **Browsered Screenshot** from
+Chromium's Extensions menu and pin it to the toolbar.
+
+- **Select an area** lets you drag a box and release to capture it. Press Escape
+  or use Cancel to dismiss the selection.
+- **Capture visible area** captures the part of the page on screen.
+- **Capture full page** includes the scrollable document below the fold. Very tall
+  pages are scaled to fit in one image. Sticky headers can repeat as the page
+  scrolls. Keep the tab active until the preview opens.
+
+The preview opens with **Copy image** focused. Click it, press Enter, or use
+Ctrl+C (Cmd+C on macOS), then paste the image where you need it. **Save PNG**
+also makes a file available in Chromium's Downloads list.
+Use **Draw** to mark up the preview freehand and **Undo stroke** to remove
+the last mark. Both copy and save include the marks.
+The menu is bundled with headed Browsered launches that support unpacked
+extensions. Use Browsered's recommended Chromium build for these controls.
 
 ## The bundled capture panel
 
